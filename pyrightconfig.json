@@ -1,0 +1,8 @@
+{
+  "venvPath": ".", // If your venv is a direct child like ./venv
+  "venv": ".venv" // The name of your venv folder
+  // Or if you want to be explicit with the full path
+  // "pythonVersion": "3.9", // Or your specific version
+  // "pythonPlatform": "Linux", // Or "Windows", "Darwin"
+  // "pythonPath": "/path/to/your/project/.venv/bin/python" // Absolute path
+}

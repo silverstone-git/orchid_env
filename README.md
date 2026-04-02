@@ -253,3 +253,60 @@ orchid_env/
     ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
     └── Dockerfile         # Container image definition
 ```
+
+
+# How to clone, run, and test
+
+```bash
+git clone https://huggingface.co/spaces/eridians/orchid_env
+git submodule update --init --recursive
+```
+
+
+```bash
+# After installing uv...
+uv sync
+```
+
+## To run the openenv it directly
+
+```bash
+uv run uvicorn server.app:app --reload
+# OR, for running it through docker
+# docker build -t orchid_env-env:latest -f server/Dockerfile .
+# docker run -p 8000:8000 orchid_env-env:latest
+
+# environment started at 8000
+uv run ../direct_client.py
+```
+
+## Environment Variables
+- DAYTONA_API_KEY
+
+
+
+
+
+## To send a hello to a local openenv
+
+
+```python
+# direct_client.py
+import asyncio
+from orchid_env import OrchidEnv, OrchidAction
+
+# Connect to existing server
+orchid_envenv = OrchidEnv(base_url="http://localhost:8000")
+
+async def main():
+    result = await orchid_envenv.reset()
+    print(result)
+    result = await orchid_envenv.step(OrchidAction(message="Hello!"))
+    print(result)
+
+
+# Use as normal
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
