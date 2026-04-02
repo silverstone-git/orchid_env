@@ -5,7 +5,6 @@ models.py
 pyproject.toml
 ./__init__.py
 ./client.py
-./daytona.py
 ./models.py
 openenv_orchid_env.egg-info/PKG-INFO
 openenv_orchid_env.egg-info/SOURCES.txt
@@ -16,3 +15,4 @@ openenv_orchid_env.egg-info/top_level.txt
 server/__init__.py
 server/app.py
 server/orchid_env_environment.py
+tests/test_daytona.py

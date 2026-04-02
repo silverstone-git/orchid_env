@@ -17,7 +17,7 @@ from pydantic import Field
 class OrchidAction(Action):
     """Action for the Orchid Env environment - just a message to echo."""
 
-    message: str = Field(..., description="Message to echo back")
+    message: str = Field(default="", description="Message to echo back")
 
 
 class OrchidObservation(Observation):
@@ -25,3 +25,4 @@ class OrchidObservation(Observation):
 
     echoed_message: str = Field(default="", description="The echoed message")
     message_length: int = Field(default=0, description="Length of the echoed message")
+    sandbox_output: str = Field(default="", description="Result from Daytona")
