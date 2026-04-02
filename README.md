@@ -259,11 +259,7 @@ orchid_env/
 
 ```bash
 git clone https://huggingface.co/spaces/eridians/orchid_env
-git submodule update --init --recursive
-```
 
-
-```bash
 # After installing uv...
 uv sync
 ```
