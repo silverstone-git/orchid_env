@@ -72,6 +72,7 @@ class OrchidEnv(
         observation = OrchidObservation(
             echoed_message=obs_data.get("echoed_message", ""),
             message_length=obs_data.get("message_length", 0),
+            sandbox_output=obs_data.get("sandbox_output", ""),
             done=payload.get("done", False),
             reward=payload.get("reward"),
             metadata=obs_data.get("metadata", {}),
