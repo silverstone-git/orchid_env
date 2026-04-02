@@ -126,9 +126,10 @@ The deployed space includes:
 **OrchidObservation**: Contains the echo response and metadata
 - `echoed_message` (str) - The message echoed back
 - `message_length` (int) - Length of the message
+- `sandbox_output` (str) - The output from the Daytona sandbox code execution
 - `reward` (float) - Reward based on message length (length × 0.1)
 - `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
+- `metadata` (dict) - Additional info like step count and sandbox_output
 
 ### Reward
 The reward is calculated as: `message_length × 0.1`
@@ -270,24 +271,23 @@ uv sync
 uv run uvicorn server.app:app --reload
 # OR, for running it through docker
 # docker build -t orchid_env-env:latest -f server/Dockerfile .
-# docker run -p 8000:8000 orchid_env-env:latest
+# docker run -p 8000:8000 -e ENABLE_WEB_INTERFACE=true -e DAYTONA_API_KEY="your_api_key_here" orchid_env-env:latest
 
 # environment started at 8000
-uv run ../direct_client.py
+# Web interface available at http://localhost:8000/web
+# or refer for the below section for orchid_env SDK access
 ```
 
 ## Environment Variables
-- DAYTONA_API_KEY
-
-
-
+- `DAYTONA_API_KEY`: Required to use the Daytona sandbox functionality.
+- `ENABLE_WEB_INTERFACE`: Set to `true` to enable the Gradio web UI at `/web`.
 
 
 ## To send a hello to a local openenv
 
 
 ```python
-# direct_client.py
+# Example Usage
 import asyncio
 from orchid_env import OrchidEnv, OrchidAction
 
