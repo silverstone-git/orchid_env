@@ -11,26 +11,36 @@ OrchidAction  — code-fix submission from a child agent.
 OrchidObservation — result of evaluating that submission.
 """
 
+from typing import List
 from openenv.core.env_server.types import Action, Observation
-from pydantic import Field
+from pydantic import BaseModel, Field
 
+class SubAgentConfig(BaseModel):
+    """Configuration for a single spawned sub-agent sandbox."""
+    role_prompt: str = Field(..., description="The persona or instructions defining this agent's purpose.")
+    start_line: int = Field(..., description="The starting line of the dataset this agent will process.")
+    end_line: int = Field(..., description="The ending line of the dataset this agent will process.")
+    python_code: str = Field(..., description="The Python script this agent will execute inside its sandbox to extract data.")
 
 class OrchidAction(Action):
-    """Code-fix submission from a child agent."""
-
-    task_id: str = Field(default="", description="ID of the task being attempted")
-    code_submission: str = Field(default="", description="The fixed code submitted by the agent")
-    agent_id: str = Field(default="", description="Identifier for the submitting agent")
-
+    """Orchestrator submission for task breakdown and mapping."""
+    agent_id: str = Field(default="", description="Identifier for the orchestrator.")
+    chunking_strategy: str = Field(..., description="Explanation of why the data was chunked this way.")
+    sub_agents: List[SubAgentConfig] = Field(..., description="The list of sub-agents to spawn.")
+    synthesis_code: str = Field(..., description="The Python script to run on the synthesized JSON outputs of the sub-agents.")
 
 class OrchidObservation(Observation):
-    """Result of evaluating an agent's code-fix submission and info for the next task."""
-
+    """Result of the multi-agent orchestration execution."""
     task_id: str = Field(default="", description="ID of the next task to be attempted")
     task_description: str = Field(default="", description="Human-readable description of the next task")
-    broken_code: str = Field(default="", description="Original broken code for the next task")
-    execution_output: str = Field(default="", description="Full pytest output from the PREVIOUS task's sandbox run")
-    tests_passed: int = Field(default=0, description="Number of tests that passed in the PREVIOUS task")
-    tests_total: int = Field(default=0, description="Total number of tests run in the PREVIOUS task")
-    score: float = Field(default=0.0, description="Normalized score of the PREVIOUS task (tests_passed / tests_total)")
-    feedback: str = Field(default="", description="Human-readable feedback from the PREVIOUS task's evaluation")
+    dataset_path: str = Field(default="", description="Path to the large context file for the next task")
+    dataset_lines: int = Field(default=0, description="Total number of lines in the dataset")
+    
+    execution_output: str = Field(default="", description="Synthesized output from the PREVIOUS task's map-reduce execution")
+    correctness_score: float = Field(default=0.0, description="Score based on the accuracy of the final synthesis (0.0 to 1.0)")
+    decomposition_score: float = Field(default=0.0, description="Score based on efficiency of chunking (punishes overlap, huge chunks, or too many agents)")
+    prompt_score: float = Field(default=0.0, description="Score evaluating the quality of the sub-agent role prompts")
+    score: float = Field(default=0.0, description="Overall weighted score of the orchestration")
+    reward: float = Field(default=0.0, description="The RL reward signal")
+    feedback: str = Field(default="", description="Detailed feedback on the orchestration strategy")
+    done: bool = Field(default=False, description="Whether the episode is complete")

@@ -48,8 +48,9 @@ class OrchidEnv(
         Convert OrchidAction to JSON payload for step message.
         """
         return {
-            "task_id": action.task_id,
-            "code_submission": action.code_submission,
+            "chunking_strategy": action.chunking_strategy,
+            "sub_agents": [sa.model_dump() for sa in action.sub_agents],
+            "synthesis_code": action.synthesis_code,
             "agent_id": action.agent_id,
         }
 
@@ -61,10 +62,12 @@ class OrchidEnv(
         observation = OrchidObservation(
             task_id=obs_data.get("task_id", ""),
             task_description=obs_data.get("task_description", ""),
-            broken_code=obs_data.get("broken_code", ""),
+            dataset_path=obs_data.get("dataset_path", ""),
+            dataset_lines=obs_data.get("dataset_lines", 0),
             execution_output=obs_data.get("execution_output", ""),
-            tests_passed=obs_data.get("tests_passed", 0),
-            tests_total=obs_data.get("tests_total", 0),
+            correctness_score=obs_data.get("correctness_score", 0.0),
+            decomposition_score=obs_data.get("decomposition_score", 0.0),
+            prompt_score=obs_data.get("prompt_score", 0.0),
             score=obs_data.get("score", 0.0),
             feedback=obs_data.get("feedback", ""),
             done=payload.get("done", False),

@@ -47,106 +47,51 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 @dataclass
-class CodingTask:
+class BigDataTask:
     id: str
     description: str
-    broken_code: str
-    test_code: str
+    dataset_path: str
+    dataset_lines: int
+    ground_truth: str
+    task_type: str # 'list' or 'count'
 
-
-TASK_BANK: List[CodingTask] = [
-    CodingTask(
-        id="fix_off_by_one",
+TASK_BANK: List[BigDataTask] = [
+    BigDataTask(
+        id="extract_anomalies_easy",
         description=(
-            "Fix the off-by-one error in `sum_list`. "
-            "It should return the sum of ALL elements in the list."
+            "EASY: You are given a massive system log file. "
+            "Extract all occurrences of 'EASTER_EGG_ERROR_CODE' values. "
+            "Output must be a python list of the string codes found, e.g., ['0x99A', '0x99B']."
         ),
-        broken_code=(
-            "def sum_list(nums):\n"
-            "    total = 0\n"
-            "    for i in range(len(nums) - 1):  # BUG: skips last element\n"
-            "        total += nums[i]\n"
-            "    return total"
-        ),
-        test_code=(
-            "def test_sum_empty():\n"
-            "    assert sum_list([]) == 0\n\n"
-            "def test_sum_single():\n"
-            "    assert sum_list([5]) == 5\n\n"
-            "def test_sum_multiple():\n"
-            "    assert sum_list([1, 2, 3, 4]) == 10\n\n"
-            "def test_sum_negative():\n"
-            "    assert sum_list([-1, -2, 3]) == 0\n"
-        ),
+        dataset_path="server/mock_system.log",
+        dataset_lines=10003,
+        ground_truth="['0x99A', '0x99B', '0x99A']",
+        task_type="list"
     ),
-    CodingTask(
-        id="fix_type_error",
+    BigDataTask(
+        id="count_critical_medium",
         description=(
-            "Fix `divide` so it raises `ZeroDivisionError` instead of "
-            "returning an error string when b == 0."
+            "MEDIUM: You are given a massive system log file. "
+            "Count the exact total number of 'CRITICAL' level logs in the entire file. "
+            "Output must be just the integer count."
         ),
-        broken_code=(
-            "def divide(a, b):\n"
-            "    if b == 0:\n"
-            "        return 'Error: division by zero'  # BUG: should raise\n"
-            "    return a / b"
-        ),
-        test_code=(
-            "import pytest\n\n"
-            "def test_normal():\n"
-            "    assert divide(10, 2) == 5.0\n\n"
-            "def test_zero_raises():\n"
-            "    with pytest.raises(ZeroDivisionError):\n"
-            "        divide(5, 0)\n\n"
-            "def test_float_result():\n"
-            "    assert divide(7, 2) == 3.5\n"
-        ),
+        dataset_path="server/mock_system.log",
+        dataset_lines=10003,
+        ground_truth="3",
+        task_type="count"
     ),
-    CodingTask(
-        id="fix_logic_bug",
+    BigDataTask(
+        id="extract_timestamps_hard",
         description=(
-            "Fix `is_palindrome` — it incorrectly returns False for palindromes "
-            "because a spurious character is appended before comparing."
+            "HARD: You are given a massive system log file. "
+            "Extract the exact timestamps (e.g., 'Feb 01 12:00:00') of every 'CRITICAL' log. "
+            "Output must be a python list of strings in chronological order."
         ),
-        broken_code=(
-            "def is_palindrome(s):\n"
-            "    s = s.lower()\n"
-            "    return s == s[::-1] + 'x'  # BUG: spurious 'x' appended\n"
-        ),
-        test_code=(
-            "def test_palindrome():\n"
-            "    assert is_palindrome('racecar') is True\n\n"
-            "def test_non_palindrome():\n"
-            "    assert is_palindrome('hello') is False\n\n"
-            "def test_single_char():\n"
-            "    assert is_palindrome('a') is True\n\n"
-            "def test_case_insensitive():\n"
-            "    assert is_palindrome('Madam') is True\n"
-        ),
-    ),
-    CodingTask(
-        id="fix_missing_return",
-        description=(
-            "Fix `factorial` — recursive calls are made but the return value "
-            "is discarded, so the function always returns None for n > 1."
-        ),
-        broken_code=(
-            "def factorial(n):\n"
-            "    if n <= 1:\n"
-            "        return 1\n"
-            "    n * factorial(n - 1)  # BUG: missing `return`\n"
-        ),
-        test_code=(
-            "def test_zero():\n"
-            "    assert factorial(0) == 1\n\n"
-            "def test_one():\n"
-            "    assert factorial(1) == 1\n\n"
-            "def test_five():\n"
-            "    assert factorial(5) == 120\n\n"
-            "def test_ten():\n"
-            "    assert factorial(10) == 3628800\n"
-        ),
-    ),
+        dataset_path="server/mock_system.log",
+        dataset_lines=10003,
+        ground_truth="['Feb 01 12:00:00', 'Feb 05 14:30:00', 'Feb 10 09:15:00']",
+        task_type="list"
+    )
 ]
 
 
@@ -172,8 +117,8 @@ class OrchidEnvironment(Environment):
 
     def __init__(self) -> None:
         self._state = State(episode_id=str(uuid4()), step_count=0)
-        self._task_queue: List[CodingTask] = []
-        self._current_task: Optional[CodingTask] = None
+        self._task_queue: List[BigDataTask] = []
+        self._current_task: Optional[BigDataTask] = None
         self._sandbox = None
         self._daytona: Daytona
         self._agent_scores: Dict[str, float] = {}
@@ -190,15 +135,33 @@ class OrchidEnvironment(Environment):
 
     def _create_sandbox(self) -> None:
         try:
-            self._sandbox = self._daytona.create()
-            # Ensure pytest is installed in the sandbox's Python environment
-            self._sandbox.process.code_run(
-                'import subprocess, sys; '
-                'subprocess.run([sys.executable, "-m", "pip", "install", "pytest"], capture_output=True)'
+            params = CreateSandboxFromSnapshotParams(
+                auto_stop_interval=1,
+                auto_delete_interval=1
             )
+            self._sandbox = self._daytona.create(params)
+            self._provision_logs()
         except Exception as e:
-            print(f"Failed to create sandbox or install pytest: {e}")
+            print(f"FAILED TO CREATE SANDBOX: {e}")
             self._sandbox = None
+
+    def _provision_logs(self) -> None:
+        # Push the dataset to the sandbox
+        if self._sandbox and self._current_task and os.path.exists(self._current_task.dataset_path):
+            with open(self._current_task.dataset_path, "r") as f:
+                log_content = f.read()
+
+            # Write to the sandbox
+            encoded_logs = base64.b64encode(log_content.encode()).decode()
+            try:
+                self._sandbox.process.code_run(
+                    f"import base64; "
+                    f"with open('dataset.log', 'w') as f: "
+                    f"f.write(base64.b64decode('{encoded_logs}').decode())"
+                )
+            except Exception as e:
+                print(f"FAILED TO PROVISION LOGS: {e}")
+
 
     def _destroy_sandbox(self) -> None:
         if self._sandbox is not None and self._daytona is not None:
@@ -215,18 +178,15 @@ class OrchidEnvironment(Environment):
     def reset(self, seed=None, episode_id=None, **kwargs) -> OrchidObservation:  # type: ignore[override]
         """
         Start a new episode.
-
-        Destroys any existing sandbox, resets state, loads the full task queue,
-        creates a fresh Daytona sandbox, and returns the first task.
-
-        Returns:
-            OrchidObservation describing the first coding task.
         """
         self._destroy_sandbox()
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._task_queue = list(TASK_BANK)
         self._agent_scores = {}
         self._episode_done = False
+        self._current_task = self._task_queue.pop(0) if self._task_queue else None
+        
+        # Provision the sandbox once per episode
         self._create_sandbox()
         return self._next_task_observation()
 
@@ -236,65 +196,103 @@ class OrchidEnvironment(Environment):
         if self._episode_done or self._current_task is None:
             return OrchidObservation(
                 task_id="",
-                task_description="Episode complete. Call reset() to start a new episode.",
-                broken_code="",
-                execution_output="",
-                tests_passed=0,
-                tests_total=0,
-                score=0.0,
-                feedback="Episode done.",
+                task_description="Episode complete.",
                 done=True,
-                reward=0.0,
+                reward=0.0
             )
+
+        # If sandbox failed during reset, try one last time to create it
+        if self._sandbox is None:
+            self._create_sandbox()
 
         task = self._current_task
         agent_id = action.agent_id or "default"
 
-        execution_output, tests_passed, tests_total = self._evaluate_in_sandbox(
-            action.code_submission, task.test_code
-        )
+        # Evaluate the execution graph inside the sandbox
+        execution_output, correctness = self._evaluate_in_sandbox(action, task.ground_truth, task.task_type)
 
-        correctness = tests_passed / tests_total if tests_total > 0 else 0.0
+        # ... (reward calculation logic remains same) ...
+        
+        # Calculate Decomposition Efficiency
+        total_lines_processed = 0
+        overlap_penalty = 0
+        covered_lines = set()
+        
+        for sa in action.sub_agents:
+            chunk_size = sa.end_line - sa.start_line
+            total_lines_processed += chunk_size
+            for i in range(sa.start_line, sa.end_line):
+                if i in covered_lines:
+                    overlap_penalty += 1
+                covered_lines.add(i)
+                
+        total_agents = len(action.sub_agents)
+        dataset_lines = task.dataset_lines
+        
+        # Ideal agents logic: Roughly 1 agent per 2000 lines
+        ideal_agents = max(1, dataset_lines // 2000)
+        agent_count_penalty = abs(total_agents - ideal_agents) * 0.1
+        
+        # Overlap penalty (0.0 to 1.0 scale)
+        overlap_ratio = overlap_penalty / max(1, dataset_lines)
+        
+        # Missing lines penalty
+        missing_lines = dataset_lines - len(covered_lines)
+        missing_ratio = missing_lines / max(1, dataset_lines)
+        
+        decomposition_score = 1.0 - agent_count_penalty - overlap_ratio - missing_ratio
+        decomposition_score = max(0.0, min(1.0, decomposition_score))
+        
+        # Mock Prompt Score (heuristic for now, checks for relevant keywords)
+        prompt_score = 0.0
+        if action.sub_agents:
+            total_prompt_score = 0
+            for sa in action.sub_agents:
+                p_lower = sa.role_prompt.lower()
+                if "extract" in p_lower or "find" in p_lower: total_prompt_score += 0.5
+                if "easter_egg" in p_lower or "error" in p_lower: total_prompt_score += 0.5
+            prompt_score = total_prompt_score / total_agents
 
-        reward = correctness
-
-        if tests_passed == 0:
-            reward -= 0.2
-
-        if execution_output and "Traceback" in execution_output:
-            reward -= 0.3
-
+        # Calculate Final Reward
+        reward = (0.5 * correctness) + (0.3 * decomposition_score) + (0.2 * prompt_score)
+        
+        # Step decay to discourage endless looping
         reward -= 0.05 * self._state.step_count
-
-        reward = max(-1.0, min(1.0, reward))
 
         self._agent_scores[agent_id] = self._agent_scores.get(agent_id, 0.0) + reward
 
         feedback = (
-            f"[{agent_id}] Task '{task.id}': {tests_passed}/{tests_total} tests passed "
-            f"(score={correctness:.2f}, reward={reward:.2f})\n"
+            f"[{agent_id}] Map-Reduce Execution:\n"
+            f"  - Sub-agents spawned: {total_agents} (Ideal: {ideal_agents})\n"
+            f"  - Decomposition Score: {decomposition_score:.2f} (Overlap: {overlap_penalty}, Missing: {missing_lines})\n"
+            f"  - Prompt Quality: {prompt_score:.2f}\n"
+            f"  - Correctness: {correctness:.2f}\n"
+            f"Total Step Reward: {reward:.2f}\n"
             f"Output:\n{execution_output}"
         )
 
-        done = self._advance_task()
-
-        next_task_id = ""
-        next_task_desc = ""
-        next_broken_code = ""
-
-        if not done and self._current_task:
-            next_task_id = self._current_task.id
-            next_task_desc = self._current_task.description
-            next_broken_code = self._current_task.broken_code
+        # Advance Task
+        done = False
+        completed_task_id = self._current_task.id
+        if self._task_queue:
+            self._current_task = self._task_queue.pop(0)
+            # Re-provision logs for the new task inside the SAME sandbox
+            self._provision_logs()
+        else:
+            self._current_task = None
+            self._episode_done = True
+            done = True
 
         return OrchidObservation(
-            task_id=next_task_id,
-            task_description=next_task_desc,
-            broken_code=next_broken_code,
+            task_id=self._current_task.id if self._current_task else "",
+            task_description=self._current_task.description if self._current_task else "",
+            dataset_path=self._current_task.dataset_path if self._current_task else "",
+            dataset_lines=self._current_task.dataset_lines if self._current_task else 0,
             execution_output=execution_output,
-            tests_passed=tests_passed,
-            tests_total=tests_total,
-            score=correctness,
+            correctness_score=correctness,
+            decomposition_score=decomposition_score,
+            prompt_score=prompt_score,
+            score=reward,
             feedback=feedback,
             done=done,
             reward=reward,
@@ -302,14 +300,12 @@ class OrchidEnvironment(Environment):
                 "agent_id": agent_id,
                 "agent_scores": self._agent_scores,
                 "step": self._state.step_count,
-                "completed_task_id": task.id,
-                "correctness": correctness,
+                "completed_task_id": completed_task_id,
             },
         )
 
     @property
     def state(self) -> State:
-        """Current episode state (episode_id + step_count)."""
         return self._state
 
     # ------------------------------------------------------------------
@@ -318,95 +314,102 @@ class OrchidEnvironment(Environment):
 
     def _next_task_observation(self) -> OrchidObservation:
         """Assign the next task from the queue and return the opening observation."""
-        if not self._task_queue:
+        if not self._current_task:
             self._episode_done = True
-            self._current_task = None
             return OrchidObservation(
                 task_id="",
                 task_description="No tasks available.",
-                broken_code="",
-                execution_output="",
-                tests_passed=0,
-                tests_total=0,
-                score=0.0,
-                feedback="Task queue empty.",
                 done=True,
                 reward=0.0,
             )
 
-        self._current_task = self._task_queue.pop(0)
         return OrchidObservation(
             task_id=self._current_task.id,
             task_description=self._current_task.description,
-            broken_code=self._current_task.broken_code,
-            execution_output="",
-            tests_passed=0,
-            tests_total=0,
-            score=0.0,
-            feedback="Task assigned. Submit your fix via step().",
+            dataset_path=self._current_task.dataset_path,
+            dataset_lines=self._current_task.dataset_lines,
             done=False,
             reward=0.0,
         )
 
-    def _advance_task(self) -> bool:
-        """Pop the next task. Returns True when the episode is finished."""
-        if self._task_queue:
-            self._current_task = self._task_queue.pop(0)
-            return False
-        self._current_task = None
-        self._episode_done = True
-        return True
-
     # ------------------------------------------------------------------
-    # Sandbox evaluation
+    # Sandbox execution
     # ------------------------------------------------------------------
 
-    def _evaluate_in_sandbox(
-        self, submission: str, test_code: str
-    ) -> tuple[str, int, int]:
-        """
-        Combine submission + tests, run pytest inside Daytona, parse results.
-
-        The combined source is base64-encoded before being sent to the sandbox
-        to avoid shell-escaping issues with arbitrary code.
-
-        Returns:
-            (output, tests_passed, tests_total)
-        """
+    def _evaluate_in_sandbox(self, action: OrchidAction, ground_truth: str, task_type: str) -> tuple[str, float]:
         if self._sandbox is None:
-            return "No sandbox available.", 0, 0
+            return "No sandbox available.", 0.0
 
-        combined = submission + "\n" + test_code
-        encoded = base64.b64encode(combined.encode()).decode()
+        sub_outputs = []
+        
+        # 1. Map Phase: Execute all sub-agents sequentially (or virtually concurrently)
+        for idx, sub_agent in enumerate(action.sub_agents):
+            agent_runner = (
+                "import sys, json\n"
+                "with open('dataset.log', 'r') as f:\n"
+                f"    lines = f.readlines()[{sub_agent.start_line}:{sub_agent.end_line}]\n"
+                "chunk_data = ''.join(lines)\n\n"
+                f"{sub_agent.python_code}\n"
+            )
+            try:
+                response = self._sandbox.process.code_run(agent_runner)
+                sub_outputs.append(response.result.strip())
+            except Exception as e:
+                sub_outputs.append(f"Error in SubAgent {idx}: {str(e)}")
 
-        runner = (
-            "import base64, tempfile, subprocess\n"
-            f"src = base64.b64decode('{encoded}').decode()\n"
-            "with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:\n"
-            "    f.write(src)\n"
-            "    fname = f.name\n"
-            "res = subprocess.run(\n"
-            "    ['python', '-m', 'pytest', fname, '-v', '--tb=short'],\n"
-            "    capture_output=True, text=True\n"
-            ")\n"
-            "print(res.stdout)\n"
-            "print(res.stderr)\n"
+        # 2. Reduce Phase: Run the synthesis code
+        escaped_outputs = base64.b64encode(repr(sub_outputs).encode()).decode()
+        
+        synth_runner = (
+            "import base64, ast, sys\n"
+            f"sub_outputs = ast.literal_eval(base64.b64decode('{escaped_outputs}').decode())\n\n"
+            f"{action.synthesis_code}\n"
         )
-
+        
         try:
-            response = self._sandbox.process.code_run(runner)
-            output = response.result
+            response = self._sandbox.process.code_run(synth_runner)
+            final_output = response.result.strip()
         except Exception as e:
-            return f"Sandbox error: {e}", 0, 0
-
-        tests_passed, tests_total = self._parse_pytest(output)
-        return output, tests_passed, tests_total
-
-    @staticmethod
-    def _parse_pytest(output: str) -> tuple[int, int]:
-        """Extract (passed, total) counts from pytest -v output."""
-        passed = len(re.findall(r" PASSED", output))
-        failed = len(re.findall(r" FAILED", output))
-        errors = len(re.findall(r" ERROR", output))
-        return passed, passed + failed + errors
-
+            final_output = f"Error in Synthesis: {str(e)}"
+            
+        # 3. Evaluate Correctness (Partial Progress Grader)
+        correctness = 0.0
+        try:
+            if "Error" in final_output or "Traceback" in final_output:
+                correctness = -0.5
+            else:
+                import ast
+                truth_val = ast.literal_eval(ground_truth)
+                try:
+                    pred_val = ast.literal_eval(final_output)
+                except:
+                    pred_val = final_output # fallback to string
+                
+                if task_type == "list" and isinstance(truth_val, list) and isinstance(pred_val, list):
+                    # Jaccard-like overlap for partial credit
+                    truth_set = set(truth_val)
+                    pred_set = set(pred_val)
+                    if not truth_set and not pred_set:
+                        correctness = 1.0
+                    else:
+                        intersection = truth_set.intersection(pred_set)
+                        union = truth_set.union(pred_set)
+                        correctness = len(intersection) / len(union)
+                elif task_type == "count":
+                    # Distance-based partial credit for counts
+                    try:
+                        pred_count = int(pred_val)
+                        truth_count = int(truth_val)
+                        diff = abs(pred_count - truth_count)
+                        correctness = max(0.0, 1.0 - (diff / max(1, truth_count)))
+                    except:
+                        correctness = 0.0
+                else:
+                    # Fallback strict match
+                    if str(truth_val).strip() == str(pred_val).strip():
+                        correctness = 1.0
+        except Exception as e:
+            print(f"Grader exception: {e}")
+            correctness = 0.0
+            
+        return final_output, correctness

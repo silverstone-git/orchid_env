@@ -27,33 +27,49 @@ STDOUT FORMAT
 
 import asyncio
 import os
-import re
+import json
 import textwrap
 from typing import List, Optional
 
 from openai import OpenAI
 
 from client import OrchidEnv
-from models import OrchidAction
+from models import OrchidAction, SubAgentConfig
 
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") # If you are using docker image 
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
-TASK_NAME = os.getenv("ORCHID_ENV_TASK", "code_fix")
+TASK_NAME = os.getenv("ORCHID_ENV_TASK", "map_reduce_orchestration")
 BENCHMARK = os.getenv("ORCHID_ENV_BENCHMARK", "orchid_env")
 MAX_STEPS = 10
 TEMPERATURE = 0.2
-MAX_TOKENS = 1024
+MAX_TOKENS = 2048
 SUCCESS_SCORE_THRESHOLD = 0.5  # average score
 
 SYSTEM_PROMPT = textwrap.dedent(
     """
-    You are an expert Python programmer.
-    You will be provided with a task description and some broken code.
-    Your goal is to provide the fixed code that satisfies the description and passes all tests.
-    You must return ONLY the python code inside a ```python ``` block, nothing else.
+    You are an expert Big Data Orchestrator.
+    You will be given a massive task and the size of the dataset.
+    Your goal is to divide the problem, delegate it to sub-agents by providing them with specific python extraction code, and then provide a synthesis script to combine their outputs.
+    
+    You must output a VALID JSON object matching this schema:
+    {
+      "chunking_strategy": "Explain your logic",
+      "sub_agents": [
+        {
+          "role_prompt": "Specific instructions for this agent",
+          "start_line": int,
+          "end_line": int,
+          "python_code": "print('extracted_data')" # The code the agent will run on `chunk_data` string
+        }
+      ],
+      "synthesis_code": "print(sub_outputs)" # The code to combine the array of outputs
+    }
+    
+    Note: Each sub-agent's python code will be executed in a sandbox where `chunk_data` is a string containing their assigned lines.
+    The `synthesis_code` will be executed in a sandbox where `sub_outputs` is a list of strings returned by the sub-agents.
     """
 ).strip()
 
@@ -76,25 +92,15 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
-def extract_code(text: str) -> str:
-    match = re.search(r'```python\n(.*?)```', text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    match = re.search(r'```\n(.*?)```', text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return text.strip()
-
-
-def build_user_prompt(task_desc: str, broken_code: str, feedback: str) -> str:
-    prompt = f"Task Description: {task_desc}\n\nBroken Code:\n```python\n{broken_code}\n```"
+def build_user_prompt(task_desc: str, dataset_lines: int, feedback: str) -> str:
+    prompt = f"Task Description: {task_desc}\nDataset Size: {dataset_lines} lines\n"
     if feedback:
-        prompt += f"\n\nPrevious Feedback:\n{feedback}\nPlease try again and fix the errors."
+        prompt += f"\nPrevious Feedback:\n{feedback}\nPlease refine your orchestration strategy."
     return prompt
 
 
-def get_model_message(client: OpenAI, task_desc: str, broken_code: str, feedback: str) -> str:
-    user_prompt = build_user_prompt(task_desc, broken_code, feedback)
+def get_model_message(client: OpenAI, task_desc: str, dataset_lines: int, feedback: str) -> Optional[OrchidAction]:
+    user_prompt = build_user_prompt(task_desc, dataset_lines, feedback)
     try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
@@ -104,13 +110,25 @@ def get_model_message(client: OpenAI, task_desc: str, broken_code: str, feedback
             ],
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
+            response_format={"type": "json_object"},
             stream=False,
         )
         text = (completion.choices[0].message.content or "").strip()
-        return extract_code(text)
+        data = json.loads(text)
+        
+        sub_agents = [
+            SubAgentConfig(**sa) for sa in data.get("sub_agents", [])
+        ]
+        
+        return OrchidAction(
+            agent_id=MODEL_NAME,
+            chunking_strategy=data.get("chunking_strategy", ""),
+            sub_agents=sub_agents,
+            synthesis_code=data.get("synthesis_code", "")
+        )
     except Exception as exc:
-        print(f"[DEBUG] Model request failed: {exc}", flush=True)
-        return broken_code
+        print(f"[DEBUG] Model request or parsing failed: {exc}", flush=True)
+        return None
 
 
 async def main() -> None:
@@ -127,8 +145,6 @@ async def main() -> None:
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        # Connecting to the locally running instance since it is running on port 8000
-        # Included extended timeouts for Daytona sandbox creation
         async with OrchidEnv(base_url="http://localhost:8000", connect_timeout_s=300.0, message_timeout_s=300.0) as env:
             result = await env.reset()
             obs = result.observation
@@ -141,14 +157,17 @@ async def main() -> None:
                     
                 task_id = obs.task_id
                 
-                # Ask LLM for fixed code
-                fixed_code = get_model_message(client, obs.task_description, obs.broken_code, feedback)
+                # Ask LLM for Orchestration Plan
+                action = get_model_message(client, obs.task_description, obs.dataset_lines, feedback)
                 
-                # Define short action string for the mandatory [STEP] log
-                action_str = f"submit_fix(task_id={task_id})"
+                if not action:
+                    print("[DEBUG] Failed to generate valid action. Skipping step.")
+                    break
+
+                action_str = f"orchestrate(agents={len(action.sub_agents)})"
 
                 # Execute action
-                result = await env.step(OrchidAction(task_id=task_id, code_submission=fixed_code, agent_id=MODEL_NAME))
+                result = await env.step(action)
                 obs = result.observation
 
                 reward = result.reward or 0.0
@@ -156,8 +175,6 @@ async def main() -> None:
                 error = None
                 feedback = obs.feedback
                 
-                # We use the native environment "score" (correctness = tests_passed / tests_total)
-                # to calculate the normalized [0, 1] end-of-episode score requested by HF inference rules
                 total_correctness += obs.score
 
                 rewards.append(reward)
@@ -168,7 +185,7 @@ async def main() -> None:
                 if done:
                     break
 
-            # Calculate normalized score in [0, 1] range based on average task correctness
+            # Calculate normalized score in [0, 1] range based on average task score
             score = total_correctness / steps_taken if steps_taken > 0 else 0.0
             score = min(max(score, 0.0), 1.0)
             success = score >= SUCCESS_SCORE_THRESHOLD
