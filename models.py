@@ -11,9 +11,10 @@ OrchidAction  — code-fix submission from a child agent.
 OrchidObservation — result of evaluating that submission.
 """
 
-from typing import List
+from typing import List, Union
 from openenv.core.env_server.types import Action, Observation
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+import json
 
 class SubAgentConfig(BaseModel):
     """Configuration for a single spawned sub-agent sandbox."""
@@ -28,6 +29,18 @@ class OrchidAction(Action):
     chunking_strategy: str = Field(default="Single chunk", description="Explanation of why the data was chunked this way.")
     sub_agents: List[SubAgentConfig] = Field(default_factory=list, description="The list of sub-agents to spawn.")
     synthesis_code: str = Field(default="print(sub_outputs)", description="The Python script to run on the synthesized JSON outputs of the sub-agents.")
+
+    @model_validator(mode='before')
+    @classmethod
+    def parse_sub_agents_string(cls, values):
+        # Gradio sometimes passes lists as JSON strings
+        if isinstance(values, dict) and 'sub_agents' in values:
+            if isinstance(values['sub_agents'], str):
+                try:
+                    values['sub_agents'] = json.loads(values['sub_agents'])
+                except json.JSONDecodeError:
+                    pass  # Let Pydantic fail normally if it's invalid JSON
+        return values
 
 class OrchidObservation(Observation):
     """Result of the multi-agent orchestration execution."""
