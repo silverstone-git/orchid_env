@@ -87,6 +87,69 @@ docker build -t orchid_env-env:latest -f server/Dockerfile .
 docker run -p 8000:8000 -e DAYTONA_API_KEY="your_key" orchid_env-env:latest
 ```
 
+### Gradio Web UI
+When running the server with `ENABLE_WEB_INTERFACE=true`, a Gradio UI is available at `http://localhost:8000/web`.
+
+#### How to use the UI:
+1. **Click "Reset"** at the bottom of the page to start the episode and provision the sandbox.
+2. The observation window will update with the first task (`extract_anomalies_easy`).
+3. Fill in the **Action** form with the following example to achieve a perfect orchestration score:
+
+**`chunking_strategy`**:
+```text
+Dividing 10,003 lines evenly across 5 agents to maximize parallel throughput.
+```
+
+**`sub_agents`** (Paste this exact JSON array):
+```json
+[
+  {
+    "role_prompt": "Extract EASTER_EGG_ERROR_CODE anomalies from logs using regex.",
+    "start_line": 0,
+    "end_line": 2000,
+    "python_code": "import re, json; codes = re.findall(r'EASTER_EGG_ERROR_CODE:\\s*(0x[0-9A-Fa-f]+)', chunk_data); print(json.dumps(codes))"
+  },
+  {
+    "role_prompt": "Extract EASTER_EGG_ERROR_CODE anomalies from logs using regex.",
+    "start_line": 2000,
+    "end_line": 4000,
+    "python_code": "import re, json; codes = re.findall(r'EASTER_EGG_ERROR_CODE:\\s*(0x[0-9A-Fa-f]+)', chunk_data); print(json.dumps(codes))"
+  },
+  {
+    "role_prompt": "Extract EASTER_EGG_ERROR_CODE anomalies from logs using regex.",
+    "start_line": 4000,
+    "end_line": 6000,
+    "python_code": "import re, json; codes = re.findall(r'EASTER_EGG_ERROR_CODE:\\s*(0x[0-9A-Fa-f]+)', chunk_data); print(json.dumps(codes))"
+  },
+  {
+    "role_prompt": "Extract EASTER_EGG_ERROR_CODE anomalies from logs using regex.",
+    "start_line": 6000,
+    "end_line": 8000,
+    "python_code": "import re, json; codes = re.findall(r'EASTER_EGG_ERROR_CODE:\\s*(0x[0-9A-Fa-f]+)', chunk_data); print(json.dumps(codes))"
+  },
+  {
+    "role_prompt": "Extract EASTER_EGG_ERROR_CODE anomalies from logs using regex.",
+    "start_line": 8000,
+    "end_line": 10003,
+    "python_code": "import re, json; codes = re.findall(r'EASTER_EGG_ERROR_CODE:\\s*(0x[0-9A-Fa-f]+)', chunk_data); print(json.dumps(codes))"
+  }
+]
+```
+
+**`synthesis_code`**:
+```python
+import json
+final_list = []
+for out in sub_outputs:
+    try:
+        final_list.extend(json.loads(out))
+    except:
+        pass
+print(final_list)
+```
+
+4. **Click "Step"** to execute your pipeline. You will see a breakdown of your Correctness, Decomposition, and Prompt scores!
+
 ### Baseline Inference
 Evaluate an agent (e.g., Gemma) using the OpenAI-compatible endpoint:
 ```bash
