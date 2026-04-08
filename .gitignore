@@ -2,3 +2,4 @@ GEMINI.md
 .geminiignore
 **/__pycache__
 **/.env
+openenv_orchid_env.egg-info

@@ -1,2 +1,0 @@
-[console_scripts]
-server = orchid_env.server.app:main

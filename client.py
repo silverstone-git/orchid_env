@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Orchid Env Environment Client."""
+"""Orchid Env RL Evaluation Environment Client."""
 
 from typing import Dict
 
@@ -12,72 +12,65 @@ from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.env_server.types import State
 
-from .models import OrchidAction, OrchidObservation
+try:
+    from .models import OrchidAction, OrchidObservation
+except ImportError:
+    from models import OrchidAction, OrchidObservation
 
 
 class OrchidEnv(
     EnvClient[OrchidAction, OrchidObservation, State]
 ):
     """
-    Client for the Orchid Env Environment.
+    Client for the Orchid Env RL Evaluation Environment.
 
-    This client maintains a persistent WebSocket connection to the environment server,
-    enabling efficient multi-step interactions with lower latency.
-    Each client instance has its own dedicated environment session on the server.
+    Maintains a persistent WebSocket connection to the environment server.
+    Each client instance gets its own isolated environment session (and Daytona sandbox).
 
-    Example:
-        >>> # Connect to a running server
-        >>> with OrchidEnv(base_url="http://localhost:8000") as client:
-        ...     result = client.reset()
-        ...     print(result.observation.echoed_message)
-        ...
-        ...     result = client.step(OrchidAction(message="Hello!"))
-        ...     print(result.observation.echoed_message)
+    Example::
 
-    Example with Docker:
-        >>> # Automatically start container and connect
-        >>> client = OrchidEnv.from_docker_image("orchid_env-env:latest")
-        >>> try:
-        ...     result = client.reset()
-        ...     result = client.step(OrchidAction(message="Test"))
-        ... finally:
-        ...     client.close()
+        with OrchidEnv(base_url="http://localhost:8000") as env:
+            obs = env.reset()
+            print(obs.observation.task_description)
+            print(obs.observation.broken_code)
+
+            result = env.step(OrchidAction(
+                task_id=obs.observation.task_id,
+                code_submission="def sum_list(nums): return sum(nums)",
+                agent_id="agent-1",
+            ))
+            print(result.observation.feedback)
+            print(result.reward)
     """
 
     def _step_payload(self, action: OrchidAction) -> Dict:
         """
         Convert OrchidAction to JSON payload for step message.
-
-        Args:
-            action: OrchidAction instance
-
-        Returns:
-            Dictionary representation suitable for JSON encoding
         """
         return {
-            "message": action.message,
+            "task_id": action.task_id,
+            "code_submission": action.code_submission,
+            "agent_id": action.agent_id,
         }
 
     def _parse_result(self, payload: Dict) -> StepResult[OrchidObservation]:
         """
         Parse server response into StepResult[OrchidObservation].
-
-        Args:
-            payload: JSON response data from server
-
-        Returns:
-            StepResult with OrchidObservation
         """
         obs_data = payload.get("observation", {})
         observation = OrchidObservation(
-            echoed_message=obs_data.get("echoed_message", ""),
-            message_length=obs_data.get("message_length", 0),
-            sandbox_output=obs_data.get("sandbox_output", ""),
+            task_id=obs_data.get("task_id", ""),
+            task_description=obs_data.get("task_description", ""),
+            broken_code=obs_data.get("broken_code", ""),
+            execution_output=obs_data.get("execution_output", ""),
+            tests_passed=obs_data.get("tests_passed", 0),
+            tests_total=obs_data.get("tests_total", 0),
+            score=obs_data.get("score", 0.0),
+            feedback=obs_data.get("feedback", ""),
             done=payload.get("done", False),
             reward=payload.get("reward"),
             metadata=obs_data.get("metadata", {}),
         )
-
         return StepResult(
             observation=observation,
             reward=payload.get("reward"),

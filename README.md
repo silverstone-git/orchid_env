@@ -1,308 +1,114 @@
 ---
-title: Orchid Env Environment Server
+title: Orchid Env - Code Fix Evaluation
 emoji: 💿
-colorFrom: red
-colorTo: red
+colorFrom: blue
+colorTo: green
 sdk: docker
 pinned: false
 app_port: 8000
 base_path: /web
 tags:
   - openenv
+  - rl
+  - code-generation
 ---
 
-# Orchid Env Environment
+# Orchid Env - Code Fix Evaluation Environment
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+Orchid Env is a real-world task simulation environment for evaluating LLM-based RL agents on code-fixing tasks. It provides a series of broken Python functions and requires the agent to submit code fixes. These fixes are evaluated inside isolated **Daytona** sandboxes using **Pytest**.
 
-## Quick Start
-
-The simplest way to use the Orchid Env environment is through the `OrchidEnv` class:
-
-```python
-from orchid_env import OrchidAction, OrchidEnv
-
-try:
-    # Create environment from Docker image
-    orchid_envenv = OrchidEnv.from_docker_image("orchid_env-env:latest")
-
-    # Reset
-    result = orchid_envenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
-
-    for msg in messages:
-        result = orchid_envenv.step(OrchidAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
-
-finally:
-    # Always clean up
-    orchid_envenv.close()
-```
-
-That's it! The `OrchidEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
-
-## Building the Docker Image
-
-Before using the environment, you need to build the Docker image:
-
-```bash
-# From project root
-docker build -t orchid_env-env:latest -f server/Dockerfile .
-```
-
-## Deploying to Hugging Face Spaces
-
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
-
-```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
-
-# Or specify options
-openenv push --namespace my-org --private
-```
-
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
-
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
-```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
-```
-
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
+## Motivation
+Evaluating coding agents requires more than just static analysis. Orchid Env provides a dynamic "Gymnasium-style" interface where agents receive immediate feedback from test executions, allowing for reinforcement learning and iterative improvement in a secure, isolated environment.
 
 ## Environment Details
 
-### Action
-**OrchidAction**: Contains a single field
-- `message` (str) - The message to echo back
+### Action Space
+**OrchidAction**:
+- `task_id` (str): ID of the task being attempted.
+- `code_submission` (str): The full Python code fix submitted by the agent.
+- `agent_id` (str): Identifier for the agent (e.g., model name).
 
-### Observation
-**OrchidObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `sandbox_output` (str) - The output from the Daytona sandbox code execution
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count and sandbox_output
+### Observation Space
+**OrchidObservation**:
+- `task_id` (str): ID of the **next** task to be attempted.
+- `task_description` (str): Human-readable description of the next task.
+- `broken_code` (str): The original broken code for the next task.
+- `execution_output` (str): Full pytest output from the **previous** task's execution.
+- `tests_passed` (int): Number of tests passed in the previous task.
+- `tests_total` (int): Total number of tests in the previous task.
+- `score` (float): Correctness of the previous task (passed/total).
+- `reward` (float): The RL reward signal for the previous step.
+- `done` (bool): True if all tasks in the bank have been completed.
 
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
+### Tasks & Difficulty
+| Task ID | Description | Difficulty |
+| :--- | :--- | :--- |
+| `fix_off_by_one` | Fix a range loop that skips the last element. | Easy |
+| `fix_type_error` | Ensure a function raises `ZeroDivisionError` correctly. | Medium |
+| `fix_logic_bug` | Remove a spurious character from a palindrome checker. | Easy |
+| `fix_missing_return` | Add a missing return statement in a recursive function. | Medium |
 
-## Advanced Usage
+### Reward Function
+The environment provides a dense reward signal:
+- **Base Reward**: `tests_passed / tests_total` (0.0 to 1.0).
+- **Zero Progress Penalty**: `-0.2` if no tests pass.
+- **Runtime Error Penalty**: `-0.3` if the code generates a Python `Traceback`.
+- **Step Penalty**: `-0.05 * step_count` to discourage inefficient/random trials.
+- **Total Reward**: Clamped between `-1.0` and `1.0`.
 
-### Connecting to an Existing Server
+## Baseline Scores
+Evaluated using `gemini-3.1-flash-lite-preview`:
+- **Average Correctness**: 1.00 (All tasks solved)
+- **Total Reward**: ~3.50 (After step penalties and deductions)
 
-If you already have a Orchid Env environment server running, you can connect directly:
+## Setup & Usage
 
-```python
-from orchid_env import OrchidEnv
+### Prerequisites
+- [Daytona API Key](https://www.daytona.io/)
+- Python 3.10+ and `uv`
 
-# Connect to existing server
-orchid_envenv = OrchidEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = orchid_envenv.reset()
-result = orchid_envenv.step(OrchidAction(message="Hello!"))
-```
-
-Note: When connecting to an existing server, `orchid_envenv.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
-
-```python
-from orchid_env import OrchidAction, OrchidEnv
-
-# Connect with context manager (auto-connects and closes)
-with OrchidEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(OrchidAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
-```
-
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
-
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    OrchidEnvironment,  # Pass class, not instance
-    OrchidAction,
-    OrchidObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from orchid_env import OrchidAction, OrchidEnv
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with OrchidEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(OrchidAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
-
+### Installation
 ```bash
-# From the server directory
-python3 server/orchid_env_environment.py
-```
-
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
-### Running Locally
-
-Run the server locally for development:
-
-```bash
-uvicorn server.app:app --reload
-```
-
-## Project Structure
-
-```
-orchid_env/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # OrchidEnv client
-├── models.py              # Action and Observation models
-└── server/
-    ├── __init__.py        # Server module exports
-    ├── orchid_env_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
-```
-
-
-# How to clone, run, and test
-
-```bash
-git clone https://huggingface.co/spaces/eridians/orchid_env
-
-# After installing uv...
+git clone <repo-url>
+cd orchid_env
 uv sync
 ```
 
-## To run the openenv it directly
-
+### Running the Server
 ```bash
-uv run uvicorn server.app:app --reload
-# OR, for running it through docker
-# docker build -t orchid_env-env:latest -f server/Dockerfile .
-# docker run -p 8000:8000 -e ENABLE_WEB_INTERFACE=true -e DAYTONA_API_KEY="your_api_key_here" orchid_env-env:latest
+export DAYTONA_API_KEY="your_api_key_here"
+uv run python -m server.app
+```
+The server will start at `http://localhost:8000`.
 
-# environment started at 8000
-# Web interface available at http://localhost:8000/web
-# or refer for the below section for orchid_env SDK access
+### Running the Baseline Inference
+To run the evaluation using Gemini's OpenAI-compatible endpoint:
+```bash
+export GEMINI_API_KEY="your_api_key"
+export API_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+export MODEL_NAME="gemini-1.5-flash"
+export API_KEY="${GEMINI_API_KEY}"
+
+uv run python inference.py
 ```
 
-## Environment Variables
-- `DAYTONA_API_KEY`: Required to use the Daytona sandbox functionality.
-- `ENABLE_WEB_INTERFACE`: Set to `true` to enable the Gradio web UI at `/web`.
-
-
-## To send a hello to a local openenv
-
-
+## Quick Start Client Example
 ```python
-# Example Usage
 import asyncio
-from orchid_env import OrchidEnv, OrchidAction
-
-# Connect to existing server
-orchid_envenv = OrchidEnv(base_url="http://localhost:8000")
+from client import OrchidEnv
+from models import OrchidAction
 
 async def main():
-    result = await orchid_envenv.reset()
-    print(result)
-    result = await orchid_envenv.step(OrchidAction(message="Hello!"))
-    print(result)
+    async with OrchidEnv(base_url="http://localhost:8000") as env:
+        obs = await env.reset()
+        print(f"Task: {obs.observation.task_description}")
+        
+        result = await env.step(OrchidAction(
+            task_id=obs.observation.task_id,
+            code_submission="def sum_list(nums): return sum(nums)"
+        ))
+        print(f"Reward: {result.reward}")
 
-
-# Use as normal
 if __name__ == "__main__":
     asyncio.run(main())
 ```
-
