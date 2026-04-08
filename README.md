@@ -159,14 +159,3 @@ export API_KEY="your OPENAI_API_KEY or HF_TOKEN"
 
 uv run python inference.py
 ```
-
-## 🛠 Troubleshooting
-
-### "Total disk limit exceeded" (Daytona)
-If you see this error, it means orphaned sandboxes from previous crashed runs are filling your 30GB limit.
-1.  Visit the [Daytona Dashboard](https://app.daytona.io/dashboard/).
-2.  Manually delete or archive old workspaces.
-3.  The environment now uses `auto_delete_interval=1` to prevent this in the future.
-
-### "No module named pytest"
-The environment uses standard Python libraries for Map-Reduce. If your `synthesis_code` requires a specific library, ensure it is available or installable via `pip` inside the sandbox logic.
