@@ -25,9 +25,9 @@ class SubAgentConfig(BaseModel):
 class OrchidAction(Action):
     """Orchestrator submission for task breakdown and mapping."""
     agent_id: str = Field(default="", description="Identifier for the orchestrator.")
-    chunking_strategy: str = Field(..., description="Explanation of why the data was chunked this way.")
-    sub_agents: List[SubAgentConfig] = Field(..., description="The list of sub-agents to spawn.")
-    synthesis_code: str = Field(..., description="The Python script to run on the synthesized JSON outputs of the sub-agents.")
+    chunking_strategy: str = Field(default="Single chunk", description="Explanation of why the data was chunked this way.")
+    sub_agents: List[SubAgentConfig] = Field(default_factory=list, description="The list of sub-agents to spawn.")
+    synthesis_code: str = Field(default="print(sub_outputs)", description="The Python script to run on the synthesized JSON outputs of the sub-agents.")
 
 class OrchidObservation(Observation):
     """Result of the multi-agent orchestration execution."""
