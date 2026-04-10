@@ -37,7 +37,7 @@ try:
 except ImportError:
     from models import OrchidAction, OrchidObservation
 
-from .sandbox_controller import MSBController
+from .sandbox_controller import LocalController
 
 # ---------------------------------------------------------------------------
 # Task bank
@@ -232,7 +232,7 @@ class OrchidEnvironment(Environment):
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._task_queue: List[BigDataTask] = []
         self._current_task: Optional[BigDataTask] = None
-        self._sandbox_controller = MSBController()
+        self._sandbox_controller = LocalController()
         self._agent_scores: Dict[str, float] = {}
         self._episode_done: bool = False
 

@@ -14,19 +14,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system deps and msb CLI
+# Install system deps
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
-
-RUN curl -fsSL https://install.microsandbox.dev | sh
 
 # Copy code
 COPY . /app
 
 # Install Python deps
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir .
+RUN pip install --default-timeout=1000 --no-cache-dir --upgrade pip && \
+    pip install --default-timeout=1000 --no-cache-dir .
 
 # Set env
 ENV PYTHONPATH="/app"

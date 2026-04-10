@@ -112,9 +112,15 @@ async def generate_orchestration(client: AsyncOpenAI, task_desc: str, dataset_li
         else:
             json_text = cleaned_text
 
+        # 3. Robust JSON Fix: Sometimes LLMs output invalid escapes in regex/code
+        try:
+            data = json.loads(json_text)
+        except json.JSONDecodeError:
+            # Try to fix unescaped backslashes (common in regex)
+            fixed_json = re.sub(r'\\(?![/"\\bfnrtu])', r'\\\\', json_text)
+            data = json.loads(fixed_json)
+
         print(f"🔍 Cleaned Output Snippet: {json_text[:200]}...")
-        
-        data = json.loads(json_text)
         
         print(f"📝 Strategy: {data.get('chunking_strategy')}")
         sub_agents_data = data.get("sub_agents", [])

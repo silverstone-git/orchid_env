@@ -171,7 +171,14 @@ async def get_model_message(client: AsyncOpenAI, task_desc: str, dataset_lines: 
         else:
             json_text = cleaned_text
             
-        data = json.loads(json_text)
+        # 3. Robust JSON Fix: Sometimes LLMs output invalid escapes in regex/code
+        try:
+            data = json.loads(json_text)
+        except json.JSONDecodeError:
+            # Try to fix unescaped backslashes (common in regex)
+            # This regex looks for backslashes that are NOT followed by valid JSON escape chars
+            fixed_json = re.sub(r'\\(?![/"\\bfnrtu])', r'\\\\', json_text)
+            data = json.loads(fixed_json)
         
         sub_agents = [
             SubAgentConfig(**sa) for sa in data.get("sub_agents", [])
