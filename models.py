@@ -11,7 +11,7 @@ OrchidAction  — code-fix submission from a child agent.
 OrchidObservation — result of evaluating that submission.
 """
 
-from typing import List, Union
+from typing import List, Dict
 from openenv.core.env_server.types import Action, Observation
 from pydantic import BaseModel, Field, model_validator
 import json
@@ -56,4 +56,5 @@ class OrchidObservation(Observation):
     score: float = Field(default=0.0, description="Overall weighted score of the orchestration")
     reward: float = Field(default=0.0, description="The RL reward signal")
     feedback: str = Field(default="", description="Detailed feedback on the orchestration strategy")
+    messages: List[Dict[str, str]] = Field(default_factory=list, description="Standard messages list for grader output")
     done: bool = Field(default=False, description="Whether the episode is complete")

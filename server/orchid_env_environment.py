@@ -383,6 +383,7 @@ class OrchidEnvironment(Environment):
             prompt_score=prompt_score,
             score=reward,
             feedback=feedback,
+            messages=[{"category": "grader", "content": feedback}],
             done=done,
             reward=reward,
             metadata={
@@ -433,6 +434,7 @@ class OrchidEnvironment(Environment):
             task_description=desc_with_sample,
             dataset_path=self._current_task.dataset_path,
             dataset_lines=self._current_task.dataset_lines,
+            messages=[{"category": "system", "content": desc_with_sample}],
             done=False,
             reward=0.0,
         )
