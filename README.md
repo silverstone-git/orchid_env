@@ -41,7 +41,8 @@ When an agent submits an `OrchidAction`:
 2.  **Reduce Phase**:
     -   All strings printed/returned by sub-agents are collected into a list called `sub_outputs`.
     -   The agent's `synthesis_code` is executed in a fresh process, which has access to `sub_outputs`.
-3.  **Synthesis**: The final output of the synthesis script is what the environment grades.
+3.  **Synthesis**: The final output of the synthesis script is graded.
+4.  **Grader Output**: The environment calculates multi-objective scores and returns detailed feedback in the `messages` array of the `OrchidObservation`, mimicking a standard OpenEnv code grader.
 
 ## 🎯 Task Bank
 

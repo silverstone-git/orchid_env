@@ -241,12 +241,10 @@ async def main() -> None:
                 result = await env.step(action)
                 obs = result.observation
 
-                reward = result.reward or 0.0
+                reward = result.reward if result.reward is not None else 0.0
                 done = result.done
                 feedback = obs.feedback
                 
-                total_correctness += obs.correctness_score if hasattr(obs, 'correctness_score') else obs.score
-
                 rewards.append(reward)
                 steps_taken = step
 
@@ -256,7 +254,7 @@ async def main() -> None:
                     break
 
             # Calculate normalized score in [0, 1] range based on average task score
-            score = total_correctness / steps_taken if steps_taken > 0 else 0.0
+            score = sum(rewards) / steps_taken if steps_taken > 0 else 0.0
             score = min(max(score, 0.0), 1.0)
             success = score >= SUCCESS_SCORE_THRESHOLD
 
