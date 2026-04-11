@@ -68,7 +68,7 @@ SOLUTIONS = {
 
 async def main():
     print("🚀 Auto-Playing Orchid Env with Perfect Logic...")
-    async with OrchidEnv(base_url="http://localhost:8000", connect_timeout_s=300.0, message_timeout_s=300.0) as env:
+    async with OrchidEnv(base_url="http://localhost:7860", connect_timeout_s=300.0, message_timeout_s=300.0) as env:
         obs_result = await env.reset()
         obs = obs_result.observation
         done = obs_result.done

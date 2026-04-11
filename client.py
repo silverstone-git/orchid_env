@@ -29,7 +29,7 @@ class OrchidEnv(
 
     Example::
 
-        with OrchidEnv(base_url="http://localhost:8000") as env:
+        with OrchidEnv(base_url="http://localhost:7860") as env:
             obs = env.reset()
             print(obs.observation.task_description)
             print(obs.observation.broken_code)
