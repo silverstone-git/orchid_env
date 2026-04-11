@@ -14,29 +14,32 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system deps
+# Install system deps and uv
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates && \
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy code
 COPY . /app
 
-# Install Python deps
-RUN pip install --default-timeout=1000 --no-cache-dir --upgrade pip && \
-    pip install --default-timeout=1000 --no-cache-dir .
+# Install Python deps using uv into a virtual environment
+RUN uv venv /opt/venv && \
+    . /opt/venv/bin/activate && \
+    uv pip install --no-cache-dir .
 
-# Set env
+# Set env to use the virtual environment
+ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONPATH="/app"
 ENV ENABLE_WEB_INTERFACE=true
 
 # Expose port
-EXPOSE 8000
+EXPOSE 7860
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:7860/health || exit 1
 
 # Run server
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]
 

@@ -216,7 +216,7 @@ async def main() -> None:
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        async with OrchidEnv(base_url="http://localhost:8000", connect_timeout_s=600.0, message_timeout_s=600.0) as env:
+        async with OrchidEnv(base_url="http://localhost:7860", connect_timeout_s=600.0, message_timeout_s=600.0) as env:
             result = await env.reset()
             obs = result.observation
             

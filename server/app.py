@@ -19,10 +19,10 @@ Endpoints:
 
 Usage:
     # Development (with auto-reload):
-    uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
+    uvicorn server.app:app --reload --host 0.0.0.0 --port 7860
 
     # Production:
-    uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 4
+    uvicorn server.app:app --host 0.0.0.0 --port 7860 --workers 4
 
     # Or run directly:
     python -m server.app
@@ -49,11 +49,11 @@ app = create_app(
     OrchidAction,
     OrchidObservation,
     env_name="orchid_env",
-    max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
+    max_concurrent_envs=5,  # increase this number to allow more concurrent WebSocket sessions
 )
 
 
-def main(host: str = "0.0.0.0", port: int = 8000):
+def main(host: str = "0.0.0.0", port: int = 7860):
     """
     Entry point for direct execution via uv run or python -m.
     """

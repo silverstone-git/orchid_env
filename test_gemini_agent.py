@@ -106,7 +106,7 @@ async def main():
         print("❌ Error: GEMINI_API_KEY is not set.")
         return
 
-    async with OrchidEnv(base_url="http://localhost:8000", connect_timeout_s=300.0, message_timeout_s=300.0) as env:
+    async with OrchidEnv(base_url="http://localhost:7860", connect_timeout_s=300.0, message_timeout_s=300.0) as env:
         print("🔄 Resetting environment (Provisioning MSB & Logs)...")
         start_reset = time.time()
         obs_result = await env.reset()

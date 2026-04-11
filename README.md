@@ -5,7 +5,7 @@ colorFrom: purple
 colorTo: blue
 sdk: docker
 pinned: false
-app_port: 8000
+app_port: 7860
 base_path: /web
 tags:
   - openenv
@@ -100,7 +100,7 @@ This is the only safe way to run the environment.
 docker build -t orchid_env-env:latest -f server/Dockerfile .
 
 # Run the container
-docker run -p 8000:8000 orchid_env-env:latest
+docker run -p 7860:7860 orchid_env-env:latest
 ```
 
 ### Running the Server (Local - UNRESTRICTED)
@@ -111,7 +111,7 @@ uv run python -m server.app
 ```
 
 ### Gradio Web UI
-When running the server with `ENABLE_WEB_INTERFACE=true`, a Gradio UI is available at `http://localhost:8000/web`.
+When running the server with `ENABLE_WEB_INTERFACE=true`, a Gradio UI is available at `http://localhost:7860/web`.
 
 #### How to use the UI:
 1. **Click "Reset"** at the bottom of the page to start the episode and provision the sandbox.

@@ -169,7 +169,7 @@ async def main():
     # Note: Increased message_timeout_s to 600.0 (10 minutes)
     # The "1011 keepalive ping timeout" usually happens because the LLM takes too long to respond,
     # or the evaluation code blocks the event loop for too long. A 10-minute timeout helps prevent this.
-    async with OrchidEnv(base_url="http://localhost:8000", connect_timeout_s=600.0, message_timeout_s=600.0) as env:
+    async with OrchidEnv(base_url="http://localhost:7860", connect_timeout_s=600.0, message_timeout_s=600.0) as env:
         print("🔄 Resetting environment (Provisioning MSB & Logs)...")
         start_reset = time.time()
         obs_result = await env.reset()
