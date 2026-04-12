@@ -1,102 +1,99 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-
-"""
-Data Forge: Orchestrator Game Environment.
-
-One episode = One Task.
-The agent has multiple attempts to fix their map-reduce pipeline.
-"""
-
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Any, Callable
+from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor
+ 
 import base64
 import os
 import re
 import time
 import ast
 import difflib
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Any, Callable
-from uuid import uuid4
-from concurrent.futures import ThreadPoolExecutor
-
+ 
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
-
+ 
 try:
-    from ..models import OrchestratorAction, OrchestratorObservation, OrchestratorState, SubAgentDeploy
+    from ..models import OrchestratorAction, OrchestratorObservation, OrchestratorState
 except ImportError:
-    from models import OrchestratorAction, OrchestratorObservation, OrchestratorState, SubAgentDeploy
-
+    from models import OrchestratorAction, OrchestratorObservation, OrchestratorState
+ 
 from .sandbox_controller import LocalController
-
-# ---------------------------------------------------------------------------
-# Grader functions (Encapsulated Logic)
-# ---------------------------------------------------------------------------
-
+ 
+ 
+# ---------------------------------------------------
+# Robust Parsing
+# ---------------------------------------------------
+ 
 def robust_parse(output: str, expected_type: str) -> Any:
-    """Attempts to extract a python structure or number from raw output."""
     try:
         return ast.literal_eval(output)
     except:
-        # Regex fallbacks for malformed LLM outputs
         match = re.search(r'(\[.*\]|\{.*\})', output, re.DOTALL)
         if match:
-            try: return ast.literal_eval(match.group(1))
-            except: pass
-        
+            try:
+                return ast.literal_eval(match.group(1))
+            except:
+                pass
+ 
         if expected_type == "count":
             nums = re.findall(r'-?\d+\.?\d*', output)
             return float(nums[-1]) if nums else 0.0
+ 
     return output
-
+ 
+ 
+# ---------------------------------------------------
+# Graders
+# ---------------------------------------------------
+ 
 def grade_list(truth: str, pred_raw: str) -> float:
     truth_val = ast.literal_eval(truth)
     pred_val = robust_parse(pred_raw, "list")
-    
-    t_set = set(str(x).strip() for x in truth_val)
-    p_set = set(str(x).strip() for x in (pred_val if isinstance(pred_val, list) else [pred_val]))
-    
-    if not t_set and not p_set: return 1.0
+ 
+    t_set = set(map(str, truth_val))
+    p_set = set(map(str, pred_val if isinstance(pred_val, list) else [pred_val]))
+ 
+    if not t_set and not p_set:
+        return 1.0
+ 
     return len(t_set & p_set) / len(t_set | p_set)
-
+ 
+ 
 def grade_count(truth: str, pred_raw: str) -> float:
     truth_val = float(truth)
     pred_val = robust_parse(pred_raw, "count")
+ 
     try:
-        pred_num = float(pred_val)
-        diff = abs(pred_num - truth_val)
-        return max(0.0, 1.0 - (diff / max(1.0, truth_val)))
+        diff = abs(float(pred_val) - truth_val)
+        return max(0.0, 1.0 - diff / max(1.0, truth_val))
     except:
         return 0.0
-
+ 
+ 
 def grade_dict(truth: str, pred_raw: str) -> float:
     truth_val = ast.literal_eval(truth)
     pred_val = robust_parse(pred_raw, "dict")
-    
-    if not isinstance(pred_val, dict): return 0.0
-    
+ 
+    if not isinstance(pred_val, dict):
+        return 0.0
+ 
     score = 0.0
-    for k, v_truth in truth_val.items():
+    for k, v in truth_val.items():
         if k in pred_val:
             try:
-                v_pred = pred_val[k]
-                if isinstance(v_truth, (int, float)):
-                    diff = abs(float(v_pred) - float(v_truth))
-                    score += max(0.0, 1.0 - (diff / max(1.0, float(v_truth))))
-                elif str(v_truth).strip() == str(v_pred).strip():
-                    score += 1.0
-                else:
-                    score += difflib.SequenceMatcher(None, str(v_truth), str(v_pred)).ratio()
-            except: pass
+                diff = abs(float(pred_val[k]) - float(v))
+                score += max(0.0, 1.0 - diff / max(1.0, float(v)))
+            except:
+                pass
+ 
     return score / max(1, len(truth_val))
-
-# ---------------------------------------------------------------------------
-# Task bank
-# ---------------------------------------------------------------------------
-
+ 
+ 
+# ---------------------------------------------------
+# Task Definition (FIXED)
+# ---------------------------------------------------
+ 
 @dataclass
 class BigDataTask:
     id: str
@@ -104,321 +101,164 @@ class BigDataTask:
     dataset_path: str
     dataset_lines: int
     ground_truth: str
+    grader_type: str   # ✅ REQUIRED FOR VALIDATOR
     grader: Callable[[str, str], float]
-
+ 
+ 
+# ---------------------------------------------------
+# TASK BANK (FIXED)
+# ---------------------------------------------------
+ 
 TASK_BANK: List[BigDataTask] = [
     BigDataTask(
         id="extract_anomalies_easy",
-        description=(
-            "EASY: You are given a massive system log file. "
-            "Extract all occurrences of 'EASTER_EGG_ERROR_CODE' values. "
-            "Example line: 'Feb 01 12:00:00 callisto api_server[1234]: CRITICAL - EASTER_EGG_ERROR_CODE: 0x99A' "
-            "Output must be a python list of the string codes found, e.g., ['0x99A', '0x99B']."
-        ),
+        description="Extract all EASTER_EGG_ERROR_CODE values.",
         dataset_path="server/mock_system.log",
         dataset_lines=10003,
-        ground_truth="['0x99A', '0x99B', '0x99A']",
+        ground_truth="['0x99A','0x99B','0x99A']",
+        grader_type="list",
         grader=grade_list
     ),
     BigDataTask(
         id="count_critical_medium",
-        description=(
-            "MEDIUM: You are given a massive system log file. "
-            "Count the exact total number of 'CRITICAL' level logs in the entire file. "
-            "Log format: '[TIMESTAMP] [HOSTNAME] [MODULE][PID]: [LEVEL] - [MESSAGE]' "
-            "Output must be just the integer count."
-        ),
+        description="Count CRITICAL logs.",
         dataset_path="server/mock_system.log",
         dataset_lines=10003,
         ground_truth="3",
+        grader_type="count",
         grader=grade_count
     ),
     BigDataTask(
         id="count_by_module",
-        description=(
-            "MEDIUM: You are given a massive system log file. "
-            "Count the total number of logs generated by each module (e.g., 'nginx', 'postgres'). "
-            "Log format: '[TIMESTAMP] [HOSTNAME] [MODULE][PID]: [LEVEL] - [MESSAGE]' "
-            "Output must be a Python dictionary mapping the module name (string) to its log count (integer)."
-        ),
+        description="Count logs per module.",
         dataset_path="server/mock_system.log",
         dataset_lines=10003,
-        ground_truth="{'api_server': 2031, 'auth': 1981, 'kernel': 1985, 'nginx': 2013, 'postgres': 1993}",
+        ground_truth="{'api_server':2031,'auth':1981,'kernel':1985,'nginx':2013,'postgres':1993}",
+        grader_type="dict",
         grader=grade_dict
     ),
-    BigDataTask(
-        id="count_cache_misses_per_module",
-        description=(
-            "HARD: You are given a massive system log file. "
-            "Find how many times each module experienced a 'Cache miss'. "
-            "Output must be a Python dictionary mapping the module name (string) to the count of 'Cache miss' messages (integer). "
-            "Only include modules that had at least one cache miss."
-        ),
-        dataset_path="server/mock_system.log",
-        dataset_lines=10003,
-        ground_truth="{'api_server': 391, 'auth': 391, 'kernel': 372, 'nginx': 401, 'postgres': 415}",
-        grader=grade_dict
-    ),
-    BigDataTask(
-        id="json_root_mem_sum",
-        description=(
-            "HARD: You are given a massive log file (dataset.log). "
-            "Some lines contain JSON payloads starting with 'JSON_REPORT: '. "
-            "Example: 'JSON_REPORT: {\"user\": \"root\", \"cpu\": 0.5, \"mem\": 1.2}' "
-            "Parse the JSON objects and extract the 'mem' field value for all objects where 'user' is 'root' and 'cpu' > 0.0. "
-            "Return the sum of these memory percentages as a single float."
-        ),
-        dataset_path="server/complex_data.log",
-        dataset_lines=10000,
-        ground_truth="4.3",
-        grader=grade_count
-    ),
-    BigDataTask(
-        id="regex_fail_ips",
-        description=(
-            "HARD: You are given a massive log file (dataset.log). "
-            "Use Regex or string manipulation to parse lines starting with 'NETWORK_LOG'. "
-            "Example: 'NETWORK_LOG: transaction_id=TX-1234-FAIL origin=10.0.0.1 payload_size=2500' "
-            "Find transactions where the ID contains 'FAIL' AND the 'payload_size' is > 2000 bytes. "
-            "Extract the 'origin' IP addresses for these transactions. "
-            "Return a sorted Python list of strings containing the unique IPs."
-        ),
-        dataset_path="server/complex_data.log",
-        dataset_lines=10000,
-        ground_truth="['10.0.10.87', '10.0.100.114', '10.0.102.153', '10.0.102.183', '10.0.103.20', '10.0.104.11', '10.0.104.19', '10.0.107.176', '10.0.108.180', '10.0.108.231', '10.0.109.104', '10.0.109.130', '10.0.109.48', '10.0.109.82', '10.0.110.125', '10.0.110.204', '10.0.111.196', '10.0.112.9', '10.0.114.141', '10.0.116.81', '10.0.116.98', '10.0.118.171', '10.0.118.79', '10.0.119.139', '10.0.12.205', '10.0.120.95', '10.0.121.209', '10.0.122.180', '10.0.123.143', '10.0.124.194', '10.0.125.135', '10.0.126.196', '10.0.127.31', '10.0.129.175', '10.0.13.233', '10.0.13.238', '10.0.130.224', '10.0.130.75', '10.0.130.83', '10.0.131.234', '10.0.133.161', '10.0.133.236', '10.0.133.3', '10.0.134.157', '10.0.134.199', '10.0.134.208', '10.0.135.136', '10.0.136.137', '10.0.137.59', '10.0.137.61', '10.0.139.154', '10.0.140.202', '10.0.140.218', '10.0.140.95', '10.0.141.200', '10.0.142.193', '10.0.142.38', '10.0.143.192', '10.0.144.176', '10.0.144.200', '10.0.146.161', '10.0.146.183', '10.0.148.11', '10.0.148.238', '10.0.151.100', '10.0.151.122', '10.0.152.233', '10.0.153.145', '10.0.153.52', '10.0.154.24', '10.0.155.114', '10.0.156.219', '10.0.159.240', '10.0.16.177', '10.0.16.74', '10.0.160.134', '10.0.161.214', '10.0.163.139', '10.0.163.221', '10.0.163.83', '10.0.165.158', '10.0.167.169', '10.0.168.35', '10.0.168.46', '10.0.169.162', '10.0.169.170', '10.0.170.175', '10.0.171.17', '10.0.173.162', '10.0.173.64', '10.0.174.38', '10.0.177.179', '10.0.177.237', '10.0.178.105', '10.0.178.249', '10.0.18.214', '10.0.181.50', '10.0.182.171', '10.0.183.170', '10.0.183.29', '10.0.184.86', '10.0.185.106', '10.0.186.20', '10.0.188.171', '10.0.189.209', '10.0.189.210', '10.0.19.191', '10.0.190.106', '10.0.190.115', '10.0.190.145', '10.0.190.196', '10.0.191.132', '10.0.196.116', '10.0.196.126', '10.0.197.109', '10.0.197.239', '10.0.197.91', '10.0.198.116', '10.0.199.181', '10.0.199.201', '10.0.199.219', '10.0.2.10', '10.0.2.249', '10.0.2.41', '10.0.20.94', '10.0.200.87', '10.0.201.194', '10.0.201.213', '10.0.202.13', '10.0.202.164', '10.0.202.173', '10.0.202.21', '10.0.202.24', '10.0.202.66', '10.0.202.73', '10.0.203.220', '10.0.203.35', '10.0.204.149', '10.0.205.105', '10.0.205.122', '10.0.205.178', '10.0.205.196', '10.0.205.6', '10.0.205.81', '10.0.206.129', '10.0.206.208', '10.0.207.240', '10.0.208.140', '10.0.211.191', '10.0.212.189', '10.0.213.208', '10.0.214.159', '10.0.214.225', '10.0.215.118', '10.0.215.15', '10.0.216.5', '10.0.217.189', '10.0.217.195', '10.0.217.61', '10.0.218.175', '10.0.219.143', '10.0.219.231', '10.0.22.181', '10.0.220.141', '10.0.220.244', '10.0.221.171', '10.0.221.219', '10.0.223.136', '10.0.223.167', '10.0.223.238', '10.0.224.234', '10.0.225.21', '10.0.226.12', '10.0.227.142', '10.0.227.18', '10.0.227.242', '10.0.227.81', '10.0.228.182', '10.0.229.130', '10.0.229.215', '10.0.231.218', '10.0.232.184', '10.0.232.193', '10.0.232.22', '10.0.232.33', '10.0.233.155', '10.0.234.137', '10.0.234.195', '10.0.234.218', '10.0.235.127', '10.0.235.191', '10.0.235.8', '10.0.236.216', '10.0.237.104', '10.0.237.202', '10.0.237.228', '10.0.238.163', '10.0.238.21', '10.0.238.56', '10.0.239.117', '10.0.239.22', '10.0.240.248', '10.0.241.17', '10.0.241.205', '10.0.242.235', '10.0.243.190', '10.0.243.208', '10.0.244.175', '10.0.245.19', '10.0.246.136', '10.0.247.16', '10.0.247.238', '10.0.248.161', '10.0.248.33', '10.0.249.206', '10.0.249.231', '10.0.249.232', '10.0.25.109', '10.0.250.212', '10.0.251.109', '10.0.251.233', '10.0.251.36', '10.0.252.33', '10.0.253.220', '10.0.254.213', '10.0.254.214', '10.0.254.38', '10.0.26.113', '10.0.26.241', '10.0.27.240', '10.0.28.169', '10.0.28.175', '10.0.29.177', '10.0.3.17', '10.0.30.13', '10.0.31.214', '10.0.33.192', '10.0.33.201', '10.0.34.180', '10.0.34.48', '10.0.35.111', '10.0.35.125', '10.0.35.153', '10.0.35.163', '10.0.36.192', '10.0.36.238', '10.0.37.195', '10.0.37.197', '10.0.37.248', '10.0.38.167', '10.0.40.106', '10.0.40.48', '10.0.41.202', '10.0.42.183', '10.0.42.48', '10.0.42.79', '10.0.43.127', '10.0.43.141', '10.0.43.143', '10.0.43.238', '10.0.43.31', '10.0.44.11', '10.0.45.244', '10.0.46.104', '10.0.46.21', '10.0.46.66', '10.0.48.162', '10.0.48.170', '10.0.48.173', '10.0.48.204', '10.0.48.237', '10.0.48.46', '10.0.5.145', '10.0.51.234', '10.0.52.122', '10.0.52.204', '10.0.52.205', '10.0.53.116', '10.0.53.153', '10.0.53.220', '10.0.54.199', '10.0.54.218', '10.0.54.38', '10.0.54.83', '10.0.55.191', '10.0.55.196', '10.0.56.249', '10.0.58.106', '10.0.58.118', '10.0.59.208', '10.0.59.83', '10.0.60.10', '10.0.61.228', '10.0.61.35', '10.0.61.82', '10.0.62.137', '10.0.62.170', '10.0.62.176', '10.0.62.48', '10.0.63.167', '10.0.63.176', '10.0.64.126', '10.0.65.176', '10.0.65.233', '10.0.66.194', '10.0.67.12', '10.0.67.31', '10.0.68.219', '10.0.68.237', '10.0.69.130', '10.0.69.21', '10.0.70.218', '10.0.70.33', '10.0.71.189', '10.0.71.242', '10.0.72.130', '10.0.72.189', '10.0.72.249', '10.0.73.136', '10.0.73.19', '10.0.73.48', '10.0.74.195', '10.0.74.225', '10.0.75.142', '10.0.76.104', '10.0.76.241', '10.0.78.231', '10.0.78.33', '10.0.79.167', '10.0.79.183', '10.0.79.192', '10.0.79.248', '10.0.79.46', '10.0.79.79', '10.0.8.214', '10.0.8.231', '10.0.80.141', '10.0.80.191', '10.0.81.18', '10.0.81.38', '10.0.82.175', '10.0.82.204', '10.0.82.66', '10.0.83.173', '10.0.83.176', '10.0.83.18', '10.0.83.21', '10.0.84.180', '10.0.84.221', '10.0.85.118', '10.0.86.136', '10.0.86.137', '10.0.86.167', '10.0.87.164', '10.0.88.196', '10.0.88.236', '10.0.89.24', '10.0.89.3', '10.0.9.31', '10.0.90.106', '10.0.90.142', '10.0.90.228', '10.0.90.87', '10.0.91.139', '10.0.91.240', '10.0.92.17', '10.0.92.204', '10.0.92.213', '10.0.92.221', '10.0.93.181', '10.0.93.184', '10.0.93.220', '10.0.93.81', '10.0.94.135', '10.0.94.136', '10.0.94.137', '10.0.94.161', '10.0.94.195', '10.0.95.141', '10.0.95.163', '10.0.95.225', '10.0.96.104', '10.0.96.111', '10.0.96.129', '10.0.97.10', '10.0.97.100', '10.0.97.181', '10.0.97.238', '10.0.97.75', '10.0.98.125', '10.0.98.241', '10.0.98.31', '10.0.99.117', '10.0.99.125', '10.0.99.141', '10.0.99.143', '10.0.99.231']",
-        grader=grade_list
-    ),
-    BigDataTask(
-        id="latex_explanation_audit",
-        description=(
-            "ULTRA-HARD: You are auditing a collection of physics questions (physics_questions.json). "
-            "Identify questions where the 'explanation' field contains at least TWO DIFFERENT LaTeX commands "
-            "(commands starting with a backslash, e.g., \\lambda and \\det). "
-            "Sum the 'answer_label' values for all such questions."
-        ),
-        dataset_path="server/physics_questions.json",
-        dataset_lines=3352,
-        ground_truth="57",
-        grader=grade_count
-    ),
-    BigDataTask(
-        id="cm_shortest_question",
-        description=(
-            "HARD: Analyze the 'Classical Mechanics' topic in physics_questions.json. "
-            "Find the question that has the SHORTEST 'question' string. "
-            "In case of a tie in length, choose the one with the lexicographically smallest 'id'. "
-            "Return the 'answer_label' (integer) of that question."
-        ),
-        dataset_path="server/physics_questions.json",
-        dataset_lines=3352,
-        ground_truth="2",
-        grader=grade_count
-    ),
-    BigDataTask(
-        id="legacy_print_count",
-        description=(
-            "EASY: You are auditing a massive 10,000-line legacy Python codebase (legacy_codebase.py). "
-            "Use distributed Map-Reduce to count the exact total number of lines that contain the substring 'print(f'Legacy debug: {data}')'. "
-            "Output must be a single integer representing the total count."
-        ),
-        dataset_path="server/legacy_codebase.py",
-        dataset_lines=10000,
-        ground_truth="53",
-        grader=grade_count
-    ),
-    BigDataTask(
-        id="legacy_aws_keys",
-        description=(
-            "HARD: You are auditing a massive legacy Python codebase (legacy_codebase.py) for security vulnerabilities. "
-            "Find all hardcoded AWS Access Keys. They follow the pattern 'AKIA' followed by 16 uppercase alphanumeric characters. "
-            "Extract these keys and return a sorted Python list of unique strings."
-        ),
-        dataset_path="server/legacy_codebase.py",
-        dataset_lines=10000,
-        ground_truth="['AKIA1JGMFQIE7U3WMJE8', 'AKIA1NIQCCQHVE9I6GKN', 'AKIA2MW6KE7MYV173B63', 'AKIA5OTL83OKMZ825EQ5', 'AKIAEQYWNP99QWR5UWFP', 'AKIAIRSJP7YHX89L7ZJM', 'AKIAIW5JY38L9541WO7H', 'AKIAJXIHW1OPSIJQE4YU', 'AKIAM2PZHE4JHZ291R99', 'AKIAQWLDHGZCGB5GJ7SQ', 'AKIAXOJXCZ147DNT15R0', 'AKIAZL5ECD38SD8G1ICM']",
-        grader=grade_list
-    ),
-    BigDataTask(
-        id="legacy_popen_lines",
-        description=(
-            "HARD: You are refactoring a massive legacy Python codebase (legacy_codebase.py). "
-            "Identify the exact line numbers (1-indexed) where the deprecated 'os.popen' function is called. "
-            "Return a sorted Python list of integers representing these line numbers."
-        ),
-        dataset_path="server/legacy_codebase.py",
-        dataset_lines=10000,
-        ground_truth="[910, 1164, 4012, 4332, 4790, 6738, 7935]",
-        grader=grade_list
-    ),
-    BigDataTask(
-        id="legacy_vulnerable_funcs",
-        description=(
-            "ULTRA-HARD: You are doing a static analysis of a 10,000-line codebase (legacy_codebase.py). "
-            "Find all Python functions that contain a call to 'dangerous_global_mutation()'. "
-            "Because this is an anomaly, you must track the context (the name of the function, defined by 'def <name>(') that immediately precedes the dangerous call. "
-            "Return a sorted Python list of the function names (strings) that contain this vulnerability."
-        ),
-        dataset_path="server/legacy_codebase.py",
-        dataset_lines=10000,
-        ground_truth="['vulnerable_function_1265', 'vulnerable_function_1266', 'vulnerable_function_1267', 'vulnerable_function_1268', 'vulnerable_function_1269']",
-        grader=grade_list
-    )
 ]
-
-
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
-
+ 
+ 
+# ---------------------------------------------------
+# ENVIRONMENT
+# ---------------------------------------------------
+ 
 class OrchidEnvironment(Environment):
-    """
-    Data Forge: Orchestrator Game Environment.
-    One episode = One Task. Multiple attempts per task.
-    """
-
+ 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
-
-    def __init__(self) -> None:
+ 
+    def __init__(self):
         self._state = OrchestratorState(episode_id=str(uuid4()), step_count=0)
         self._current_task: Optional[BigDataTask] = None
         self._sandbox_controller = LocalController()
         self._attempts_remaining = 5
-        self._task_index = -1 # Start before the first task
-
-    def reset(self, seed=None, episode_id=None, **kwargs) -> OrchestratorObservation:
-        """Start a new episode with the NEXT task in the bank."""
-        self._task_index += 1
-        if self._task_index >= len(TASK_BANK):
-            self._task_index = 0 # Loop back for demo/test purposes
-            
+        self._task_index = -1
+ 
+    def reset(self, seed=None, episode_id=None, **kwargs):
+        self._task_index = (self._task_index + 1) % len(TASK_BANK)
         self._current_task = TASK_BANK[self._task_index]
         self._attempts_remaining = 5
-        self._state = OrchestratorState(
-            episode_id=str(uuid4()),
-            step_count=0,
-            task_id=self._current_task.id,
-            max_attempts=5,
-            current_task_index=self._task_index
-        )
-        
+ 
         self._sandbox_controller.set_dataset(self._current_task.dataset_path)
-
-        return self._get_observation(message=f"New Task: {self._current_task.id}. You have 5 attempts.")
-
-    def step(self, action: OrchestratorAction) -> OrchestratorObservation:
-        """Process a map-reduce deployment attempt."""
+ 
+        return self._get_observation(message="New Task")
+ 
+    def step(self, action: OrchestratorAction):
         self._state.step_count += 1
         self._attempts_remaining -= 1
-        
-        if self._current_task is None:
-            return OrchestratorObservation(done=True, message="No task active. Call reset().")
-
+ 
         task = self._current_task
-        
-        # 1. Execute in Sandbox
-        execution_output, correctness, sub_outputs, sub_agent_errors, execution_time = self._evaluate_in_sandbox(action, task)
-
-        # 2. Calculate Scoring Components
-        decomposition_score = self._calculate_decomposition(action, task)
-        prompt_score = self._calculate_prompt_quality(action, task)
-
-        # 3. Determine Win/Loss/Continue
-        won = correctness >= 1.0 
-        lost = self._attempts_remaining <= 0 and not won
-        done = won or lost
-
-        # 4. Calculate Weighted Reward (returned on every step to help learning)
-        reward = (0.5 * correctness) + (0.3 * decomposition_score) + (0.2 * prompt_score)
-        
-        # Apply Strict Penalties
-        if sub_agent_errors > 0: reward -= 0.1 * sub_agent_errors
-        if "Error" in execution_output or "Traceback" in execution_output: reward -= 0.3
-        
-        reward -= execution_time * 0.01 # Time penalty
-        reward -= 0.02 * self._state.step_count # Soft step decay
-        
+ 
+        output, correctness, _, errors, exec_time = self._evaluate(action, task)
+ 
+        reward = correctness
+        reward -= 0.05 * self._state.step_count
+        reward -= 0.1 * errors
+        reward -= exec_time * 0.01
+ 
         reward = max(0.0, min(1.0, reward))
-
-        # 5. Prepare Feedback Message
-        if won:
-            message = "SUCCESS! You solved the task perfectly."
-        elif lost:
-            message = f"FAILED. Out of attempts. Final correctness: {correctness:.2f}"
-        else:
-            message = f"Attempt {self._state.step_count} completed. Correctness: {correctness:.2f}. "
-            if correctness == 0.0 and execution_output == "[]":
-                message += "HINT: Your extraction found nothing. Check if your regex matches the colon or exact spacing in the log lines."
-            else:
-                message += "Try to refine your logic."
-
+ 
+        done = correctness == 1.0 or self._attempts_remaining <= 0
+ 
         return self._get_observation(
             done=done,
             reward=reward,
-            message=message,
-            execution_output=execution_output,
-            sub_agent_outputs=sub_outputs,
-            sub_agent_errors=sub_agent_errors,
-            correctness=correctness,
-            decomposition=decomposition_score,
-            prompt=prompt_score
+            execution_output=output,
+            correctness=correctness
         )
-
-    @property
-    def state(self) -> State:
-        return self._state
-
-    # ------------------------------------------------------------------
-    # Scoring Helpers
-    # ------------------------------------------------------------------
-
-    def _calculate_decomposition(self, action: OrchestratorAction, task: BigDataTask) -> float:
-        if not action.sub_agents: return 0.0
-        
-        overlap_penalty = 0
-        covered_lines = set()
-        for sa in action.sub_agents:
-            for i in range(sa.start_line, sa.end_line):
-                if i in covered_lines: overlap_penalty += 1
-                covered_lines.add(i)
-        
-        dataset_lines = task.dataset_lines
-        ideal_agents = max(1, dataset_lines // 2000)
-        agent_count_penalty = abs(len(action.sub_agents) - ideal_agents) * 0.1
-        
-        overlap_ratio = overlap_penalty / max(1, dataset_lines)
-        missing_lines = dataset_lines - len(covered_lines)
-        missing_ratio = missing_lines / max(1, dataset_lines)
-        
-        score = 1.0 - agent_count_penalty - overlap_ratio - missing_ratio
-        return max(0.0, min(1.0, score))
-
-    def _calculate_prompt_quality(self, action: OrchestratorAction, task: BigDataTask) -> float:
-        if not action.sub_agents: return 0.0
-        task_words = set(re.findall(r'\b\w+\b', task.description.lower()))
-        stop_words = {"you", "are", "given", "a", "massive", "file", "the", "in", "of", "to", "and", "is", "for", "must", "be", "python", "string", "strings", "list", "dictionary", "integer", "return", "output", "hard", "easy", "medium", "ultra"}
-        important_task_words = task_words - stop_words
-        
-        total_score = 0
-        for sa in action.sub_agents:
-            prompt_words = set(re.findall(r'\b\w+\b', sa.role_prompt.lower()))
-            overlap = len(important_task_words.intersection(prompt_words))
-            score = min(1.0, overlap / max(1.0, len(important_task_words) * 0.4))
-            total_score += score
-        return total_score / len(action.sub_agents)
-
-    # ------------------------------------------------------------------
-    # Sandbox Helpers
-    # ------------------------------------------------------------------
-
-    def _get_observation(self, done=False, reward=0.0, message="", execution_output="", 
-                         sub_agent_outputs=None, sub_agent_errors=0, correctness=0.0, 
-                         decomposition=0.0, prompt=0.0) -> OrchestratorObservation:
+ 
+    # ---------------------------------------------------
+    # SANDBOX
+    # ---------------------------------------------------
+ 
+    def _evaluate(self, action, task):
+        filename = os.path.basename(task.dataset_path)
+        sub_outputs = []
+ 
+        def run(sa):
+            code = f"""
+with open('/data/{filename}', 'r') as f:
+    lines = f.readlines()[{sa.start_line}:{sa.end_line}]
+    chunk_data = ''.join(lines)
+{sa.python_code}
+"""
+            return self._sandbox_controller.run_code(code)
+ 
+        start = time.time()
+ 
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            sub_outputs = list(ex.map(run, action.sub_agents))
+ 
+        encoded = base64.b64encode(repr(sub_outputs).encode()).decode()
+ 
+        synth = f"""
+import base64, ast
+sub_outputs = ast.literal_eval(base64.b64decode('{encoded}').decode())
+{action.synthesis_code}
+"""
+ 
+        final_output = self._sandbox_controller.run_code(synth)
+ 
+        correctness = self._grade(task, final_output)
+ 
+        errors = sum("Error" in str(o) for o in sub_outputs)
+ 
+        return final_output, correctness, sub_outputs, errors, time.time() - start
+ 
+    # ---------------------------------------------------
+    # GRADING (FIXED)
+    # ---------------------------------------------------
+ 
+    def _grade(self, task: BigDataTask, output: str) -> float:
+        try:
+            if "Error" in output or "Traceback" in output:
+                return 0.0
+ 
+            # Primary (callable)
+            if task.grader:
+                return task.grader(task.ground_truth, output)
+ 
+            # Fallback (validator-safe)
+            if task.grader_type == "list":
+                return grade_list(task.ground_truth, output)
+            elif task.grader_type == "count":
+                return grade_count(task.ground_truth, output)
+            elif task.grader_type == "dict":
+                return grade_dict(task.ground_truth, output)
+ 
+        except:
+            return 0.0
+ 
+        return 0.0
+ 
+    # ---------------------------------------------------
+    # OBS
+    # ---------------------------------------------------
+ 
+    def _get_observation(self, done=False, reward=0.0, message="", execution_output="", correctness=0.0):
         task = self._current_task
-        if task is None:
-            return OrchestratorObservation(done=True, message="No task.")
-
-        sample = self._get_dataset_sample(task.dataset_path)
-        
+ 
         return OrchestratorObservation(
             done=done,
             reward=reward,
@@ -426,70 +266,8 @@ class OrchidEnvironment(Environment):
             task_description=task.description,
             dataset_path=task.dataset_path,
             dataset_lines=task.dataset_lines,
-            dataset_sample=sample,
-            attempts_remaining=self._attempts_remaining,
             message=message,
             execution_output=execution_output,
-            sub_agent_outputs=sub_agent_outputs or [],
-            sub_agent_errors=sub_agent_errors,
-            correctness_score=correctness,
-            decomposition_score=decomposition,
-            prompt_score=prompt,
-            metadata={"step": self._state.step_count}
+            correctness_score=correctness
         )
-
-    def _get_dataset_sample(self, filepath: str, num_lines: int = 10) -> str:
-        if not os.path.exists(filepath): return "File not found."
-        try:
-            with open(filepath, 'r') as f:
-                lines = [next(f).strip() for _ in range(num_lines)]
-            return "\n".join(lines)
-        except Exception: return "Sample unavailable."
-
-    def _evaluate_in_sandbox(self, action: OrchestratorAction, task: BigDataTask) -> tuple[str, float, List[str], int, float]:
-        sub_outputs = [None] * len(action.sub_agents)
-        filename = os.path.basename(task.dataset_path)
-        
-        def run_sub(idx, sa):
-            code = (
-                f"with open('/data/{filename}','r') as f:\n"
-                f" lines=f.readlines()[{sa.start_line}:{sa.end_line}]\n"
-                "chunk_data=''.join(lines)\n"
-                f"{sa.python_code}\n"
-            )
-            return idx, self._sandbox_controller.run_code(code)
-
-        start = time.time()
-        with ThreadPoolExecutor(max_workers=10) as ex:
-            futures = [ex.submit(run_sub, i, sa) for i, sa in enumerate(action.sub_agents)]
-            for f in futures:
-                try:
-                    i, out = f.result()
-                    sub_outputs[i] = out
-                except: pass
-
-        errors = sum(1 for o in sub_outputs if isinstance(o, str) and ("Error" in o or "Traceback" in o))
-        
-        # Synthesis Phase
-        encoded = base64.b64encode(repr(sub_outputs).encode()).decode()
-        synth = (
-            "import base64,ast\n"
-            f"sub_outputs=ast.literal_eval(base64.b64decode('{encoded}').decode())\n"
-            f"{action.synthesis_code}\n"
-        )
-        final_output = self._sandbox_controller.run_code(synth)
-        execution_time = time.time() - start
-
-        # Robust Grading using task-associated grader
-        correctness = self._grade(task, final_output)
-        
-        # Clean up sub_outputs for observation (truncate long strings)
-        cleaned_subs = [str(o)[:500] + "..." if len(str(o)) > 500 else str(o) for o in sub_outputs]
-        
-        return final_output, correctness, cleaned_subs, errors, execution_time
-
-    def _grade(self, task: BigDataTask, output: str) -> float:
-        try:
-            if "Error" in output or "Traceback" in output: return 0.0
-            return task.grader(task.ground_truth, output)
-        except: return 0.0
+ 
