@@ -27,7 +27,7 @@ API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 BENCHMARK = os.getenv("ORCHID_ENV_BENCHMARK", "orchid_env")
 MAX_ATTEMPTS = 5 
-NUM_TASKS_TO_RUN = 5
+NUM_TASKS_TO_RUN = 12
 TEMPERATURE = 0.1
 MAX_TOKENS = 2048
 
