@@ -7,34 +7,32 @@ import re
 from typing import Optional
 
 from openai import AsyncOpenAI
-from pydantic import ValidationError
 
 from client import OrchidEnv
-from models import OrchidAction, SubAgentConfig
+from models import OrchestratorAction, SubAgentDeploy
 
-# Configuration mapping (uses HF_TOKEN, fallbacks to OPENAI_API_KEY)
+# Configuration mapping
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 SYSTEM_PROMPT = textwrap.dedent(
     """
-    You are an expert Big Data Orchestrator.
-    You will be given a massive task and the size of the dataset.
-    Your goal is to divide the problem into logical chunks, delegate them to sub-agents by providing them with specific python extraction code, and then provide a synthesis script to combine their outputs.
+    You are an expert Big Data Orchestrator playing 'Data Forge'.
+    Divide the extraction task into logical chunks, delegate them to sub-agents via python code, and provide a synthesis script.
     
     You must output a VALID JSON object matching this schema:
     {
       "chunking_strategy": "Explain your logic",
       "sub_agents": [
         {
-          "role_prompt": "Specific instructions for this agent (e.g., 'Extract JSON from root processes')",
+          "role_prompt": "Instructions for this agent",
           "start_line": int,
           "end_line": int,
-          "python_code": "import re, json; ...; print(extracted_data)" 
+          "python_code": "print(extracted_data)" 
         }
       ],
-      "synthesis_code": "import json; ...; print(final_result)" 
+      "synthesis_code": "print(final_result)" 
     }
     
     Execution Context:
@@ -49,7 +47,6 @@ SYSTEM_PROMPT = textwrap.dedent(
 async def check_json_support(client: AsyncOpenAI) -> bool:
     print(f"🔍 Probing {MODEL_NAME} for <think> tags and JSON mode support...")
     try:
-        # 1. Check for <think> tags natively
         response = await client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": "What is 2+2? Explain your reasoning, then output a JSON object with key 'result'."}],
@@ -61,7 +58,6 @@ async def check_json_support(client: AsyncOpenAI) -> bool:
             print("🧠 Detected thinking model. Disabling strict JSON mode.")
             return False
             
-        # 2. Check if strict JSON mode is supported by the endpoint
         await client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": "Output JSON with key 'result' and value 4."}],
@@ -75,12 +71,18 @@ async def check_json_support(client: AsyncOpenAI) -> bool:
         print(f"⚠️ Strict JSON mode not supported or probe failed ({e}). Falling back to robust parsing.")
         return False
 
-async def generate_orchestration(client: AsyncOpenAI, task_desc: str, dataset_lines: int, feedback: str, use_json_format: bool) -> Optional[OrchidAction]:
-    user_prompt = f"Task Description: {task_desc}\nDataset Size: {dataset_lines} lines\n"
-    if feedback:
-        user_prompt += f"\nPrevious Feedback:\n{feedback}\nPlease refine your orchestration strategy."
+async def generate_orchestration(client: AsyncOpenAI, obs, use_json_format: bool) -> OrchestratorAction:
+    user_prompt = f"Task: {obs.task_description}\nDataset: {obs.dataset_lines} lines\nSample:\n{obs.dataset_sample}\n"
+    user_prompt += f"Attempts Remaining: {obs.attempts_remaining}\n"
+    
+    if obs.message or obs.execution_output:
+        user_prompt += f"\n--- FEEDBACK FROM PREVIOUS ATTEMPT ---\n"
+        user_prompt += f"System Message: {obs.message}\n"
+        if obs.execution_output:
+            user_prompt += f"Execution Output:\n{obs.execution_output}\n"
+        user_prompt += "Please fix the errors and try again."
 
-    print(f"📡 Sending request to {MODEL_NAME} via OpenAI API...")
+    print(f"📡 Sending request to {MODEL_NAME}...")
     start_time = time.time()
     
     try:
@@ -102,50 +104,36 @@ async def generate_orchestration(client: AsyncOpenAI, task_desc: str, dataset_li
         
         raw_text = (response.choices[0].message.content or "").strip()
         
-        # 1. Handle Thinking Tags: Strip anything between <think> and </think>
         cleaned_text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
-        
-        # 2. Extract JSON: Look for the first { and last } to avoid conversational chatter
         json_match = re.search(r'(\{.*\})', cleaned_text, re.DOTALL)
-        if json_match:
-            json_text = json_match.group(1)
-        else:
-            json_text = cleaned_text
+        json_text = json_match.group(1) if json_match else cleaned_text
 
-        # 3. Robust JSON Fix: Sometimes LLMs output invalid escapes in regex/code
         try:
             data = json.loads(json_text)
         except json.JSONDecodeError:
-            # Try to fix unescaped backslashes (common in regex)
             fixed_json = re.sub(r'\\(?![/"\\bfnrtu])', r'\\\\', json_text)
             data = json.loads(fixed_json)
 
-        print(f"🔍 Cleaned Output Snippet: {json_text[:200]}...")
-        
         print(f"📝 Strategy: {data.get('chunking_strategy')}")
         sub_agents_data = data.get("sub_agents", [])
         print(f"🤖 Spawning {len(sub_agents_data)} sub-agents")
+        print("🧑‍💻 First agent code snippet:")
+        if sub_agents_data:
+            print(textwrap.indent(sub_agents_data[0].get('python_code', '')[:150] + '...', '    '))
+        print("🧑‍💻 Synthesis code snippet:")
+        print(textwrap.indent(data.get('synthesis_code', '')[:150] + '...', '    '))
         
-        sub_agents = [SubAgentConfig(**sa) for sa in sub_agents_data]
+        sub_agents = [SubAgentDeploy(**sa) for sa in sub_agents_data]
         
-        return OrchidAction(
+        return OrchestratorAction(
             agent_id=MODEL_NAME,
             chunking_strategy=data.get("chunking_strategy", ""),
             sub_agents=sub_agents,
             synthesis_code=data.get("synthesis_code", "")
         )
-    except json.JSONDecodeError as je:
-        print(f"❌ JSON Decode Error: {je}")
-        print(f"Cleaned text was:\n{cleaned_text}")
-        return OrchidAction(
-            agent_id=MODEL_NAME,
-            chunking_strategy=f"FAILED_JSON_DECODE",
-            sub_agents=[],
-            synthesis_code="print('Error')"
-        )
     except Exception as e:
         print(f"❌ Error during LLM API call/parsing: {e}")
-        return OrchidAction(
+        return OrchestratorAction(
             agent_id=MODEL_NAME,
             chunking_strategy=f"FAILED_VALIDATION_OR_API: {str(e)}",
             sub_agents=[],
@@ -154,7 +142,7 @@ async def generate_orchestration(client: AsyncOpenAI, task_desc: str, dataset_li
 
 
 async def main():
-    print(f"🚀 Starting Verbose HuggingFace/OpenAI SDK Orchestrator Test...")
+    print(f"🚀 Starting Verbose Data Forge Orchestrator Test...")
     print(f"Model: {MODEL_NAME}")
     print(f"Endpoint: {API_BASE_URL}")
     
@@ -163,37 +151,25 @@ async def main():
         return
 
     client = AsyncOpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    
     use_json_format = await check_json_support(client)
 
-    # Note: Increased message_timeout_s to 600.0 (10 minutes)
-    # The "1011 keepalive ping timeout" usually happens because the LLM takes too long to respond,
-    # or the evaluation code blocks the event loop for too long. A 10-minute timeout helps prevent this.
     async with OrchidEnv(base_url="http://localhost:7860", connect_timeout_s=600.0, message_timeout_s=600.0) as env:
-        print("🔄 Resetting environment (Provisioning MSB & Logs)...")
-        start_reset = time.time()
+        print("\n🔄 Initializing first task...")
         obs_result = await env.reset()
-        print(f"⏱️ Reset took {time.time() - start_reset:.2f}s")
-        
         obs = obs_result.observation
         done = obs_result.done
         
         step_num = 1
-        total_score = 0.0
-        feedback = ""
         
         while not done:
             print(f"\n{'#'*70}")
-            print(f"### STEP {step_num}")
+            print(f"### DEPLOYMENT ATTEMPT {step_num}")
             print(f"### Task: {obs.task_id}")
-            print(f"### Description: {obs.task_description}")
-            print(f"### Dataset: {obs.dataset_path} ({obs.dataset_lines} lines)")
+            print(f"### Attempts Remaining: {obs.attempts_remaining}")
             print(f"{'#'*70}")
             
-            # 1. Ask LLM for the plan
-            action = await generate_orchestration(client, obs.task_description, obs.dataset_lines, feedback, use_json_format)
+            action = await generate_orchestration(client, obs, use_json_format)
             
-            # 2. Submit to Env
             print(f"\n⚙️ Submitting orchestration to environment...")
             start_step = time.time()
             try:
@@ -208,30 +184,22 @@ async def main():
             obs = result.observation
             done = result.done
             
-            print(f"\n📊 RESULTS FOR TASK: {result.observation.metadata.get('completed_task_id')}")
-            print(f"  - Correctness Score:  {obs.correctness_score:.2f}")
+            print(f"\n📊 GRADER RESULTS:")
+            print(f"  - Message:             {obs.message}")
+            print(f"  - Correctness Score:   {obs.correctness_score:.2f}")
             print(f"  - Decomposition Score: {obs.decomposition_score:.2f}")
             print(f"  - Prompt Score:        {obs.prompt_score:.2f}")
-            print(f"  - TOTAL STEP REWARD:   {result.reward:.2f}")
-            
-            print(f"\n💬 FEEDBACK FROM ENV:\n{obs.feedback}")
+            print(f"  - Sub-Agent Errors:    {obs.sub_agent_errors}")
+            print(f"  - STEP REWARD:         {result.reward:.2f}")
             
             if obs.execution_output:
-                print(f"\n📥 FINAL SYNTHESIZED OUTPUT:\n{obs.execution_output}")
+                print(f"\n📥 SYNTHESIZED OUTPUT:\n{obs.execution_output}")
             
-            feedback = obs.feedback
-            total_score += obs.score
             step_num += 1
             
             if done:
-                print("\n🏁 All tasks in bank completed.")
+                print("\n🏁 Episode complete.")
                 break
-        
-        print(f"\n{'='*70}")
-        print(f"🏆 EPISODE COMPLETE")
-        print(f"Steps taken: {step_num - 1}")
-        print(f"Final Aggregated Score: {total_score:.2f}")
-        print(f"{'='*70}")
 
 if __name__ == "__main__":
     asyncio.run(main())

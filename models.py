@@ -5,56 +5,57 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Data models for the Orchid Env RL Evaluation Environment.
-
-OrchidAction  — code-fix submission from a child agent.
-OrchidObservation — result of evaluating that submission.
+Data contracts for the Data Forge Orchestrator Game.
 """
 
-from typing import List, Dict
-from openenv.core.env_server.types import Action, Observation
-from pydantic import BaseModel, Field, model_validator
-import json
+from typing import List, Dict, Optional, Any
+from openenv.core.env_server.types import Action, Observation, State
+from pydantic import BaseModel, Field
 
-class SubAgentConfig(BaseModel):
-    """Configuration for a single spawned sub-agent sandbox."""
-    role_prompt: str = Field(..., description="The persona or instructions defining this agent's purpose.")
-    start_line: int = Field(..., description="The starting line of the dataset this agent will process.")
-    end_line: int = Field(..., description="The ending line of the dataset this agent will process.")
-    python_code: str = Field(..., description="The Python script this agent will execute inside its sandbox to extract data.")
+class SubAgentDeploy(BaseModel):
+    """A worker agent deployed to process a specific chunk of data."""
+    start_line: int = Field(..., description="The starting line of the dataset")
+    end_line: int = Field(..., description="The ending line of the dataset")
+    role_prompt: str = Field(..., description="Instructions for this agent")
+    python_code: str = Field(..., description="Python script to execute")
 
-class OrchidAction(Action):
-    """Orchestrator submission for task breakdown and mapping."""
-    agent_id: str = Field(default="", description="Identifier for the orchestrator.")
-    chunking_strategy: str = Field(default="Single chunk", description="Explanation of why the data was chunked this way.")
-    sub_agents: List[SubAgentConfig] = Field(default_factory=list, description="The list of sub-agents to spawn.")
-    synthesis_code: str = Field(default="print(sub_outputs)", description="The Python script to run on the synthesized JSON outputs of the sub-agents.")
+class OrchestratorAction(Action):
+    """The player submits a full Map-Reduce architecture."""
+    chunking_strategy: str = Field(default="Single chunk", description="Logic explanation")
+    sub_agents: List[SubAgentDeploy] = Field(default_factory=list, description="Worker pool")
+    synthesis_code: str = Field(default="print(sub_outputs)", description="Final reduce script")
+    agent_id: str = Field(default="default", description="ID of the model acting")
 
-    @model_validator(mode='before')
-    @classmethod
-    def parse_sub_agents_string(cls, values):
-        # Gradio sometimes passes lists as JSON strings
-        if isinstance(values, dict) and 'sub_agents' in values:
-            if isinstance(values['sub_agents'], str):
-                try:
-                    values['sub_agents'] = json.loads(values['sub_agents'])
-                except json.JSONDecodeError:
-                    pass  # Let Pydantic fail normally if it's invalid JSON
-        return values
-
-class OrchidObservation(Observation):
-    """Result of the multi-agent orchestration execution."""
-    task_id: str = Field(default="", description="ID of the next task to be attempted")
-    task_description: str = Field(default="", description="Human-readable description of the next task")
-    dataset_path: str = Field(default="", description="Path to the large context file for the next task")
-    dataset_lines: int = Field(default=0, description="Total number of lines in the dataset")
+class OrchestratorObservation(Observation):
+    """What the player sees after deploying their architecture."""
+    # Note: 'done' and 'reward' are inherited from Observation
     
-    execution_output: str = Field(default="", description="Synthesized output from the PREVIOUS task's map-reduce execution")
-    correctness_score: float = Field(default=0.0, description="Score based on the accuracy of the final synthesis (0.0 to 1.0)")
-    decomposition_score: float = Field(default=0.0, description="Score based on efficiency of chunking (punishes overlap, huge chunks, or too many agents)")
-    prompt_score: float = Field(default=0.0, description="Score evaluating the quality of the sub-agent role prompts")
-    score: float = Field(default=0.0, description="Overall weighted score of the orchestration")
-    reward: float = Field(default=0.0, description="The RL reward signal")
-    feedback: str = Field(default="", description="Detailed feedback on the orchestration strategy")
-    messages: List[Dict[str, str]] = Field(default_factory=list, description="Standard messages list for grader output")
-    done: bool = Field(default=False, description="Whether the episode is complete")
+    # Task Context (remains static during the episode)
+    task_id: str = Field(default="", description="ID of the current task")
+    task_description: str = Field(default="", description="Task explanation")
+    dataset_path: str = Field(default="", description="Path to the file")
+    dataset_lines: int = Field(default=0, description="Total lines in file")
+    dataset_sample: str = Field(default="", description="First 5 lines of the file")
+    
+    # Game State (evolves during the episode)
+    attempts_remaining: int = Field(default=5, description="Number of deploys left")
+    
+    # Feedback from the last deployment
+    message: str = Field(default="", description="High-level feedback")
+    execution_output: str = Field(default="", description="Output from synthesis_code")
+    sub_agent_errors: int = Field(default=0, description="Number of crashed workers")
+    sub_agent_outputs: List[str] = Field(default_factory=list, description="Outputs from individual workers")
+    
+    # Partial Credit Breakdown (from the Grader)
+    correctness_score: float = Field(default=0.0, description="Accuracy of final answer")
+    decomposition_score: float = Field(default=0.0, description="Chunk overlap/efficiency score")
+    prompt_score: float = Field(default=0.0, description="Quality of role_prompts")
+    
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Misc metadata")
+
+class OrchestratorState(State):
+    """Internal episode metadata."""
+    # Note: 'episode_id' and 'step_count' are inherited from State
+    task_id: str = Field(default="")
+    max_attempts: int = Field(default=5)
+    current_task_index: int = Field(default=0)

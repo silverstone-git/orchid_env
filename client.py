@@ -4,48 +4,30 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Orchid Env RL Evaluation Environment Client."""
+"""Data Forge Orchestrator Game Client."""
 
-from typing import Dict
+from typing import Dict, Any
 
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.env_server.types import State
 
 try:
-    from .models import OrchidAction, OrchidObservation
+    from .models import OrchestratorAction, OrchestratorObservation, OrchestratorState
 except ImportError:
-    from models import OrchidAction, OrchidObservation
+    from models import OrchestratorAction, OrchestratorObservation, OrchestratorState
 
 
 class OrchidEnv(
-    EnvClient[OrchidAction, OrchidObservation, State]
+    EnvClient[OrchestratorAction, OrchestratorObservation, OrchestratorState]
 ):
     """
-    Client for the Orchid Env RL Evaluation Environment.
-
-    Maintains a persistent WebSocket connection to the environment server.
-    Each client instance gets its own isolated environment session (and Daytona sandbox).
-
-    Example::
-
-        with OrchidEnv(base_url="http://localhost:7860") as env:
-            obs = env.reset()
-            print(obs.observation.task_description)
-            print(obs.observation.broken_code)
-
-            result = env.step(OrchidAction(
-                task_id=obs.observation.task_id,
-                code_submission="def sum_list(nums): return sum(nums)",
-                agent_id="agent-1",
-            ))
-            print(result.observation.feedback)
-            print(result.reward)
+    Client for the Data Forge Orchestrator Game.
     """
 
-    def _step_payload(self, action: OrchidAction) -> Dict:
+    def _step_payload(self, action: OrchestratorAction) -> Dict:
         """
-        Convert OrchidAction to JSON payload for step message.
+        Convert OrchestratorAction to JSON payload for step message.
         """
         return {
             "chunking_strategy": action.chunking_strategy,
@@ -54,24 +36,26 @@ class OrchidEnv(
             "agent_id": action.agent_id,
         }
 
-    def _parse_result(self, payload: Dict) -> StepResult[OrchidObservation]:
+    def _parse_result(self, payload: Dict) -> StepResult[OrchestratorObservation]:
         """
-        Parse server response into StepResult[OrchidObservation].
+        Parse server response into StepResult[OrchestratorObservation].
         """
         obs_data = payload.get("observation", {})
-        observation = OrchidObservation(
+        observation = OrchestratorObservation(
+            done=payload.get("done", False),
+            reward=payload.get("reward"),
             task_id=obs_data.get("task_id", ""),
             task_description=obs_data.get("task_description", ""),
             dataset_path=obs_data.get("dataset_path", ""),
             dataset_lines=obs_data.get("dataset_lines", 0),
+            dataset_sample=obs_data.get("dataset_sample", ""),
+            attempts_remaining=obs_data.get("attempts_remaining", 0),
+            message=obs_data.get("message", ""),
             execution_output=obs_data.get("execution_output", ""),
+            sub_agent_errors=obs_data.get("sub_agent_errors", 0),
             correctness_score=obs_data.get("correctness_score", 0.0),
             decomposition_score=obs_data.get("decomposition_score", 0.0),
             prompt_score=obs_data.get("prompt_score", 0.0),
-            score=obs_data.get("score", 0.0),
-            feedback=obs_data.get("feedback", ""),
-            done=payload.get("done", False),
-            reward=payload.get("reward"),
             metadata=obs_data.get("metadata", {}),
         )
         return StepResult(
@@ -80,17 +64,15 @@ class OrchidEnv(
             done=payload.get("done", False),
         )
 
-    def _parse_state(self, payload: Dict) -> State:
+    def _parse_state(self, payload: Dict) -> OrchestratorState:
         """
-        Parse server response into State object.
-
-        Args:
-            payload: JSON response from state request
-
-        Returns:
-            State object with episode_id and step_count
+        Parse server response into OrchestratorState object.
         """
-        return State(
+        meta = payload.get("metadata", {})
+        return OrchestratorState(
             episode_id=payload.get("episode_id"),
             step_count=payload.get("step_count", 0),
+            task_id=meta.get("task_id", ""),
+            max_attempts=meta.get("max_attempts", 5),
+            current_task_index=meta.get("current_task_index", 0),
         )

@@ -5,27 +5,20 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Orchid Env RL Evaluation Environment.
+Data Forge: Orchestrator Game Environment.
 
-An RL environment where child agents are evaluated on real coding-fix tasks.
-An orchestrator manages the task queue; each step() evaluates a submitted
-code fix inside an isolated MSB sandbox and returns a reward signal.
-
-Flow::
-
-    obs = env.reset()               # assigned first task (description + broken code)
-    while not obs.done:
-        fix = agent.solve(obs)      # child agent produces a code fix
-        obs = env.step(fix)         # run fix in sandbox, score it, advance task
-
-Reward = tests_passed / tests_total  (0.0 – 1.0 per task)
+One episode = One Task.
+The agent has multiple attempts to fix their map-reduce pipeline.
 """
 
 import base64
 import os
 import re
+import time
+import ast
+import difflib
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 
@@ -33,14 +26,14 @@ from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
 try:
-    from ..models import OrchidAction, OrchidObservation
+    from ..models import OrchestratorAction, OrchestratorObservation, OrchestratorState, SubAgentDeploy
 except ImportError:
-    from models import OrchidAction, OrchidObservation
+    from models import OrchestratorAction, OrchestratorObservation, OrchestratorState, SubAgentDeploy
 
 from .sandbox_controller import LocalController
 
 # ---------------------------------------------------------------------------
-# Task bank
+# Task bank (Preserved from original Orchid Env)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -50,7 +43,7 @@ class BigDataTask:
     dataset_path: str
     dataset_lines: int
     ground_truth: str
-    task_type: str # 'list' or 'count'
+    task_type: str # 'list', 'count', or 'dict'
 
 TASK_BANK: List[BigDataTask] = [
     BigDataTask(
@@ -127,7 +120,7 @@ TASK_BANK: List[BigDataTask] = [
         ),
         dataset_path="server/complex_data.log",
         dataset_lines=10000,
-        ground_truth="['10.0.10.87', '10.0.100.114', '10.0.102.153', '10.0.102.183', '10.0.103.20', '10.0.104.11', '10.0.104.19', '10.0.107.176', '10.0.108.180', '10.0.108.231', '10.0.109.104', '10.0.109.130', '10.0.109.48', '10.0.109.82', '10.0.110.125', '10.0.110.204', '10.0.111.196', '10.0.112.9', '10.0.114.141', '10.0.116.81', '10.0.116.98', '10.0.118.171', '10.0.118.79', '10.0.119.139', '10.0.12.205', '10.0.120.95', '10.0.121.209', '10.0.122.180', '10.0.123.143', '10.0.124.194', '10.0.125.135', '10.0.126.196', '10.0.127.31', '10.0.129.175', '10.0.13.233', '10.0.13.238', '10.0.130.224', '10.0.130.75', '10.0.130.83', '10.0.131.234', '10.0.133.161', '10.0.133.236', '10.0.133.3', '10.0.134.157', '10.0.134.199', '10.0.134.208', '10.0.135.136', '10.0.136.137', '10.0.137.59', '10.0.137.61', '10.0.139.154', '10.0.140.202', '10.0.140.218', '10.0.140.95', '10.0.141.200', '10.0.142.193', '10.0.142.38', '10.0.143.192', '10.0.144.176', '10.0.144.200', '10.0.146.161', '10.0.146.183', '10.0.148.11', '10.0.148.238', '10.0.151.100', '10.0.151.122', '10.0.152.233', '10.0.153.145', '10.0.153.52', '10.0.154.24', '10.0.155.114', '10.0.156.219', '10.0.159.240', '10.0.16.177', '10.0.16.74', '10.0.160.134', '10.0.161.214', '10.0.163.139', '10.0.163.221', '10.0.163.83', '10.0.165.158', '10.0.167.169', '10.0.168.35', '10.0.168.46', '10.0.169.162', '10.0.169.170', '10.0.170.175', '10.0.171.17', '10.0.173.162', '10.0.173.64', '10.0.174.38', '10.0.177.179', '10.0.177.237', '10.0.178.105', '10.0.178.249', '10.0.18.214', '10.0.181.50', '10.0.182.171', '10.0.183.170', '10.0.183.29', '10.0.184.86', '10.0.185.106', '10.0.186.20', '10.0.188.171', '10.0.189.209', '10.0.189.210', '10.0.19.191', '10.0.190.106', '10.0.190.115', '10.0.190.145', '10.0.190.196', '10.0.191.132', '10.0.196.116', '10.0.196.126', '10.0.197.109', '10.0.197.239', '10.0.197.91', '10.0.198.116', '10.0.199.181', '10.0.199.201', '10.0.199.219', '10.0.2.10', '10.0.2.249', '10.0.2.41', '10.0.20.94', '10.0.200.87', '10.0.201.194', '10.0.203.202', '10.0.203.38', '10.0.205.119', '10.0.205.227', '10.0.207.154', '10.0.208.154', '10.0.208.168', '10.0.208.28', '10.0.209.199', '10.0.209.76', '10.0.21.1', '10.0.21.191', '10.0.210.197', '10.0.211.180', '10.0.211.56', '10.0.213.15', '10.0.213.32', '10.0.214.104', '10.0.216.32', '10.0.217.30', '10.0.218.178', '10.0.219.147', '10.0.221.227', '10.0.223.104', '10.0.223.163', '10.0.227.35', '10.0.228.35', '10.0.23.196', '10.0.23.198', '10.0.230.164', '10.0.231.80', '10.0.234.248', '10.0.235.230', '10.0.235.44', '10.0.237.106', '10.0.237.109', '10.0.237.181', '10.0.24.3', '10.0.241.156', '10.0.242.128', '10.0.243.94', '10.0.245.147', '10.0.245.235', '10.0.246.184', '10.0.247.97', '10.0.248.116', '10.0.248.195', '10.0.249.167', '10.0.250.177', '10.0.250.224', '10.0.252.226', '10.0.254.145', '10.0.255.173', '10.0.255.2', '10.0.255.47', '10.0.26.165', '10.0.26.31', '10.0.27.4', '10.0.30.234', '10.0.33.51', '10.0.34.70', '10.0.40.142', '10.0.42.75', '10.0.43.36', '10.0.44.48', '10.0.46.57', '10.0.47.125', '10.0.47.207', '10.0.47.96', '10.0.5.121', '10.0.51.1', '10.0.51.64', '10.0.52.208', '10.0.53.102', '10.0.53.107', '10.0.53.162', '10.0.54.11', '10.0.54.229', '10.0.55.108', '10.0.55.176', '10.0.58.21', '10.0.59.1', '10.0.59.79', '10.0.6.156', '10.0.6.221', '10.0.6.26', '10.0.60.108', '10.0.60.19', '10.0.60.4', '10.0.61.141', '10.0.61.254', '10.0.61.33', '10.0.62.146', '10.0.63.120', '10.0.63.168', '10.0.64.164', '10.0.65.24', '10.0.66.155', '10.0.66.158', '10.0.67.100', '10.0.67.120', '10.0.67.122', '10.0.67.227', '10.0.69.101', '10.0.69.228', '10.0.7.18', '10.0.72.206', '10.0.72.231', '10.0.73.13', '10.0.73.216', '10.0.74.29', '10.0.75.12', '10.0.76.43', '10.0.77.88', '10.0.8.157', '10.0.81.205', '10.0.83.145', '10.0.83.236', '10.0.84.64', '10.0.84.85', '10.0.85.105', '10.0.86.169', '10.0.88.11', '10.0.88.133', '10.0.91.252', '10.0.96.215', '10.0.96.225', '10.0.97.88', '10.0.99.2']",
+        ground_truth="['10.0.10.87', '10.0.100.114', '10.0.102.153', '10.0.102.183', '10.0.103.20', '10.0.104.11', '10.0.104.19', '10.0.107.176', '10.0.108.180', '10.0.108.231', '10.0.109.104', '10.0.109.130', '10.0.109.48', '10.0.109.82', '10.0.110.125', '10.0.110.204', '10.0.111.196', '10.0.112.9', '10.0.114.141', '10.0.116.81', '10.0.116.98', '10.0.118.171', '10.0.118.79', '10.0.119.139', '10.0.12.205', '10.0.120.95', '10.0.121.209', '10.0.122.180', '10.0.123.143', '10.0.124.194', '10.0.125.135', '10.0.126.196', '10.0.127.31', '10.0.129.175', '10.0.13.233', '10.0.13.238', '10.0.130.224', '10.0.130.75', '10.0.130.83', '10.0.131.234', '10.0.133.161', '10.0.133.236', '10.0.133.3', '10.0.134.157', '10.0.134.199', '10.0.134.208', '10.0.135.136', '10.0.136.137', '10.0.137.59', '10.0.137.61', '10.0.139.154', '10.0.140.202', '10.0.140.218', '10.0.140.95', '10.0.141.200', '10.0.142.193', '10.0.142.38', '10.0.143.192', '10.0.144.176', '10.0.144.200', '10.0.146.161', '10.0.146.183', '10.0.148.11', '10.0.148.238', '10.0.151.100', '10.0.151.122', '10.0.152.233', '10.0.153.145', '10.0.153.52', '10.0.154.24', '10.0.155.114', '10.0.156.219', '10.0.159.240', '10.0.16.177', '10.0.16.74', '10.0.160.134', '10.0.161.214', '10.0.163.139', '10.0.163.221', '10.0.163.83', '10.0.165.158', '10.0.167.169', '10.0.168.35', '10.0.168.46', '10.0.169.162', '10.0.169.170', '10.0.170.175', '10.0.171.17', '10.0.173.162', '10.0.173.64', '10.0.174.38', '10.0.177.179', '10.0.177.237', '10.0.178.105', '10.0.178.249', '10.0.18.214', '10.0.181.50', '10.0.182.171', '10.0.183.170', '10.0.183.29', '10.0.184.86', '10.0.185.106', '10.0.186.20', '10.0.188.171', '10.0.189.209', '10.0.189.210', '10.0.19.191', '10.0.190.106', '10.0.190.115', '10.0.190.145', '10.0.190.196', '10.0.191.132', '10.0.196.116', '10.0.196.126', '10.0.197.109', '10.0.197.239', '10.0.197.91', '10.0.198.116', '10.0.199.181', '10.0.199.201', '10.0.199.219', '10.0.2.10', '10.0.2.249', '10.0.2.41', '10.0.20.94', '10.0.200.87', '10.0.201.194', '10.0.201.213', '10.0.202.13', '10.0.202.164', '10.0.202.173', '10.0.202.21', '10.0.202.24', '10.0.202.66', '10.0.202.73', '10.0.203.220', '10.0.203.35', '10.0.204.149', '10.0.205.105', '10.0.205.122', '10.0.205.178', '10.0.205.196', '10.0.205.6', '10.0.205.81', '10.0.206.129', '10.0.206.208', '10.0.207.240', '10.0.208.140', '10.0.211.191', '10.0.212.189', '10.0.213.208', '10.0.214.159', '10.0.214.225', '10.0.215.118', '10.0.215.15', '10.0.216.5', '10.0.217.189', '10.0.217.195', '10.0.217.61', '10.0.218.175', '10.0.219.143', '10.0.219.231', '10.0.22.181', '10.0.220.141', '10.0.220.244', '10.0.221.171', '10.0.221.219', '10.0.223.136', '10.0.223.167', '10.0.223.238', '10.0.224.234', '10.0.225.21', '10.0.226.12', '10.0.227.142', '10.0.227.18', '10.0.227.242', '10.0.227.81', '10.0.228.182', '10.0.229.130', '10.0.229.215', '10.0.231.218', '10.0.232.184', '10.0.232.193', '10.0.232.22', '10.0.232.33', '10.0.233.155', '10.0.234.137', '10.0.234.195', '10.0.234.218', '10.0.235.127', '10.0.235.191', '10.0.235.8', '10.0.236.216', '10.0.237.104', '10.0.237.202', '10.0.237.228', '10.0.238.163', '10.0.238.21', '10.0.238.56', '10.0.239.117', '10.0.239.22', '10.0.240.248', '10.0.241.17', '10.0.241.205', '10.0.242.235', '10.0.243.190', '10.0.243.208', '10.0.244.175', '10.0.245.19', '10.0.246.136', '10.0.247.16', '10.0.247.238', '10.0.248.161', '10.0.248.33', '10.0.249.206', '10.0.249.231', '10.0.249.232', '10.0.25.109', '10.0.250.212', '10.0.251.109', '10.0.251.233', '10.0.251.36', '10.0.252.33', '10.0.253.220', '10.0.254.213', '10.0.254.214', '10.0.254.38', '10.0.26.113', '10.0.26.241', '10.0.27.240', '10.0.28.169', '10.0.28.175', '10.0.29.177', '10.0.3.17', '10.0.30.13', '10.0.31.214', '10.0.33.192', '10.0.33.201', '10.0.34.180', '10.0.34.48', '10.0.35.111', '10.0.35.125', '10.0.35.153', '10.0.35.163', '10.0.36.192', '10.0.36.238', '10.0.37.195', '10.0.37.197', '10.0.37.248', '10.0.38.167', '10.0.40.106', '10.0.40.48', '10.0.41.202', '10.0.42.183', '10.0.42.48', '10.0.42.79', '10.0.43.127', '10.0.43.141', '10.0.43.143', '10.0.43.238', '10.0.43.31', '10.0.44.11', '10.0.45.244', '10.0.46.104', '10.0.46.21', '10.0.46.66', '10.0.48.162', '10.0.48.170', '10.0.48.173', '10.0.48.204', '10.0.48.237', '10.0.48.46', '10.0.5.145', '10.0.51.234', '10.0.52.122', '10.0.52.204', '10.0.52.205', '10.0.53.116', '10.0.53.153', '10.0.53.220', '10.0.54.199', '10.0.54.218', '10.0.54.38', '10.0.54.83', '10.0.55.191', '10.0.55.196', '10.0.56.249', '10.0.58.106', '10.0.58.118', '10.0.59.208', '10.0.59.83', '10.0.60.10', '10.0.61.228', '10.0.61.35', '10.0.61.82', '10.0.62.137', '10.0.62.170', '10.0.62.176', '10.0.62.48', '10.0.63.167', '10.0.63.176', '10.0.64.126', '10.0.65.176', '10.0.65.233', '10.0.66.194', '10.0.67.12', '10.0.67.31', '10.0.68.219', '10.0.68.237', '10.0.69.130', '10.0.69.21', '10.0.70.218', '10.0.70.33', '10.0.71.189', '10.0.71.242', '10.0.72.130', '10.0.72.189', '10.0.72.249', '10.0.73.136', '10.0.73.19', '10.0.73.48', '10.0.74.195', '10.0.74.225', '10.0.75.142', '10.0.76.104', '10.0.76.241', '10.0.78.231', '10.0.78.33', '10.0.79.167', '10.0.79.183', '10.0.79.192', '10.0.79.248', '10.0.79.46', '10.0.79.79', '10.0.8.214', '10.0.8.231', '10.0.80.141', '10.0.80.191', '10.0.81.18', '10.0.81.38', '10.0.82.175', '10.0.82.204', '10.0.82.66', '10.0.83.173', '10.0.83.176', '10.0.83.18', '10.0.83.21', '10.0.84.180', '10.0.84.221', '10.0.85.118', '10.0.86.136', '10.0.86.137', '10.0.86.167', '10.0.87.164', '10.0.88.196', '10.0.88.236', '10.0.89.24', '10.0.89.3', '10.0.9.31', '10.0.90.106', '10.0.90.142', '10.0.90.228', '10.0.90.87', '10.0.91.139', '10.0.91.240', '10.0.92.17', '10.0.92.204', '10.0.92.213', '10.0.92.221', '10.0.93.181', '10.0.93.184', '10.0.93.220', '10.0.93.81', '10.0.94.135', '10.0.94.136', '10.0.94.137', '10.0.94.161', '10.0.94.195', '10.0.95.141', '10.0.95.163', '10.0.95.225', '10.0.96.104', '10.0.96.111', '10.0.96.129', '10.0.97.10', '10.0.97.100', '10.0.97.181', '10.0.97.238', '10.0.97.75', '10.0.98.125', '10.0.98.241', '10.0.98.31', '10.0.99.117', '10.0.99.125', '10.0.99.141', '10.0.99.143', '10.0.99.231']",
         task_type="list"
     ),
     BigDataTask(
@@ -214,184 +207,95 @@ TASK_BANK: List[BigDataTask] = [
 
 class OrchidEnvironment(Environment):
     """
-    RL environment for evaluating code-fixing agents.
-
-    The orchestrator (this class) manages a FIFO queue of CodingTasks.
-    On each step() a child agent submits a code fix which is executed inside
-    isolated MSB sandboxes.
-    The reward equals the fraction of tests that pass (0.0 – 1.0).
-
-    Attributes:
-        SUPPORTS_CONCURRENT_SESSIONS: allows multiple independent WebSocket
-            sessions, each with their own environment instance.
+    Data Forge: Orchestrator Game Environment.
+    One episode = One Task. Multiple attempts per task.
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
     def __init__(self) -> None:
-        self._state = State(episode_id=str(uuid4()), step_count=0)
-        self._task_queue: List[BigDataTask] = []
+        self._state = OrchestratorState(episode_id=str(uuid4()), step_count=0)
         self._current_task: Optional[BigDataTask] = None
         self._sandbox_controller = LocalController()
-        self._agent_scores: Dict[str, float] = {}
-        self._episode_done: bool = False
+        self._attempts_remaining = 5
+        self._task_index = -1 # Start before the first task
 
-    # ------------------------------------------------------------------
-    # Environment interface
-    # ------------------------------------------------------------------
-
-    def reset(self, seed=None, episode_id=None, **kwargs) -> OrchidObservation:  # type: ignore[override]
-        """
-        Start a new episode.
-        """
-        self._state = State(episode_id=str(uuid4()), step_count=0)
-        self._task_queue = list(TASK_BANK)
-        self._agent_scores = {}
-        self._episode_done = False
-        self._current_task = self._task_queue.pop(0) if self._task_queue else None
+    def reset(self, seed=None, episode_id=None, **kwargs) -> OrchestratorObservation:
+        """Start a new episode with the NEXT task in the bank."""
+        self._task_index += 1
+        if self._task_index >= len(TASK_BANK):
+            self._task_index = 0 # Loop back for demo/test purposes if needed, or handle exhaustion
+            
+        self._current_task = TASK_BANK[self._task_index]
+        self._attempts_remaining = 5
+        self._state = OrchestratorState(
+            episode_id=str(uuid4()),
+            step_count=0,
+            task_id=self._current_task.id,
+            max_attempts=5,
+            current_task_index=self._task_index
+        )
         
-        if self._current_task:
-            self._sandbox_controller.set_dataset(self._current_task.dataset_path)
+        self._sandbox_controller.set_dataset(self._current_task.dataset_path)
 
-        return self._next_task_observation()
+        return self._get_observation(message=f"New Task: {self._current_task.id}. You have 5 attempts.")
 
-    def step(self, action: OrchidAction) -> OrchidObservation:  # type: ignore[override]
+    def step(self, action: OrchestratorAction) -> OrchestratorObservation:
+        """Process a map-reduce deployment attempt."""
         self._state.step_count += 1
-
-        if self._episode_done or self._current_task is None:
-            return OrchidObservation(
-                task_id="",
-                task_description="Episode complete.",
-                done=True,
-                reward=0.0
-            )
+        self._attempts_remaining -= 1
+        
+        if self._current_task is None:
+            return OrchestratorObservation(done=True, message="No task active. Call reset().")
 
         task = self._current_task
-        agent_id = action.agent_id or "default"
+        
+        # 1. Execute in Sandbox
+        execution_output, correctness, sub_agent_errors, execution_time = self._evaluate_in_sandbox(action, task)
 
-        # Evaluate the execution graph inside the sandbox
-        execution_output, correctness, sub_agent_errors, execution_time = self._evaluate_in_sandbox(action, task.ground_truth, task.task_type)
+        # 2. Calculate Decomposition Efficiency
+        decomposition_score = self._calculate_decomposition(action, task)
+        
+        # 3. Calculate Prompt Quality
+        prompt_score = self._calculate_prompt_quality(action, task)
 
-        # Calculate Decomposition Efficiency
-        total_lines_processed = 0
-        overlap_penalty = 0
-        covered_lines = set()
-        
-        for sa in action.sub_agents:
-            chunk_size = sa.end_line - sa.start_line
-            total_lines_processed += chunk_size
-            for i in range(sa.start_line, sa.end_line):
-                if i in covered_lines:
-                    overlap_penalty += 1
-                covered_lines.add(i)
-                
-        total_agents = len(action.sub_agents)
-        dataset_lines = task.dataset_lines
-        
-        # Ideal agents logic: Roughly 1 agent per 2000 lines
-        ideal_agents = max(1, dataset_lines // 2000)
-        agent_count_penalty = abs(total_agents - ideal_agents) * 0.1
-        
-        # Overlap penalty (0.0 to 1.0 scale)
-        overlap_ratio = overlap_penalty / max(1, dataset_lines)
-        
-        # Missing lines penalty
-        missing_lines = dataset_lines - len(covered_lines)
-        missing_ratio = missing_lines / max(1, dataset_lines)
-        
-        decomposition_score = 1.0 - agent_count_penalty - overlap_ratio - missing_ratio
-        decomposition_score = max(0.0, min(1.0, decomposition_score))
-        
-        # Dynamic Prompt Score: measure word overlap with task description
-        prompt_score = 0.0
-        if action.sub_agents:
-            task_words = set(re.findall(r'\b\w+\b', task.description.lower()))
-            stop_words = {"you", "are", "given", "a", "massive", "file", "the", "in", "of", "to", "and", "is", "for", "must", "be", "python", "string", "strings", "list", "dictionary", "integer", "return", "output", "hard", "easy", "medium", "ultra"}
-            important_task_words = task_words - stop_words
+        # 4. Determine Win/Loss/Continue
+        won = correctness >= 1.0 # Strict accuracy
+        lost = self._attempts_remaining <= 0 and not won
+        done = won or lost
+
+        # Calculate weighted reward at the end of the episode
+        reward = 0.0
+        if done:
+            # Reward is a weighted sum of objectives
+            reward = (0.5 * correctness) + (0.3 * decomposition_score) + (0.2 * prompt_score)
             
-            total_prompt_score = 0
-            for sa in action.sub_agents:
-                prompt_words = set(re.findall(r'\b\w+\b', sa.role_prompt.lower()))
-                overlap = len(important_task_words.intersection(prompt_words))
-                # Max score if they mention at least 40% of important keywords
-                score = min(1.0, overlap / max(1.0, len(important_task_words) * 0.4))
-                total_prompt_score += score
-            prompt_score = total_prompt_score / total_agents
-
-        # Calculate Base Reward
-        reward = (0.5 * correctness) + (0.3 * decomposition_score) + (0.2 * prompt_score)
-        
-        # --- Apply Strict Penalties ---
-        # 1. Sub-agent tracebacks/errors (punish bad map code)
-        if sub_agent_errors > 0:
-            reward -= 0.1 * sub_agent_errors
+            # Apply Strict Penalties
+            if sub_agent_errors > 0: reward -= 0.1 * sub_agent_errors
+            if "Error" in execution_output or "Traceback" in execution_output: reward -= 0.3
+            if correctness == 0.0: reward -= 0.2
+            reward -= execution_time * 0.01 # Time penalty
+            reward -= 0.05 * self._state.step_count # Step decay
             
-        # 2. Synthesis traceback (punish bad reduce code)
-        if execution_output and ("Error" in execution_output or "Traceback" in execution_output):
-            reward -= 0.3
-            
-        # 3. Complete failure to answer correctly (punish random trials/hallucinations)
-        if correctness == 0.0:
-            reward -= 0.2
-            
-        # 4. Execution Time Penalty (punish slow code)
-        time_penalty = execution_time * 0.01
-        reward -= time_penalty
+            reward = max(0.0, min(1.0, reward))
 
-        # 5. Step decay to discourage endless looping
-        reward -= 0.05 * self._state.step_count
-
-        # Clip reward strictly to [0.0, 1.0] as per requirements
-        reward = max(0.0, min(1.0, reward))
-
-        self._agent_scores[agent_id] = self._agent_scores.get(agent_id, 0.0) + reward
-
-        feedback = (
-            f"[{agent_id}] Map-Reduce Execution:\n"
-            f"  - Sub-agents spawned: {total_agents} (Ideal: {ideal_agents})\n"
-            f"  - Failed Sub-agents: {sub_agent_errors}\n"
-            f"  - Execution Time: {execution_time:.2f}s (Penalty: -{time_penalty:.2f})\n"
-            f"  - Decomposition Score: {decomposition_score:.2f} (Overlap: {overlap_penalty}, Missing: {missing_lines})\n"
-            f"  - Prompt Quality: {prompt_score:.2f}\n"
-            f"  - Correctness: {correctness:.2f}\n"
-            f"Total Step Reward: {reward:.2f}\n"
-            f"Output:\n{execution_output}"
-        )
-
-        # Advance Task
-        done = False
-        completed_task_id = self._current_task.id
-        if self._task_queue:
-            self._current_task = self._task_queue.pop(0)
-            self._sandbox_controller.set_dataset(self._current_task.dataset_path)
-            sample = self._get_dataset_sample(self._current_task.dataset_path)
-            next_task_desc = f"{self._current_task.description}\n\nDataset Sample (first 5 lines):\n```\n{sample}\n```"
+        # Prepare Message
+        if won:
+            message = "SUCCESS! You solved the task perfectly."
+        elif lost:
+            message = f"FAILED. Out of attempts. Final correctness: {correctness:.2f}"
         else:
-            self._current_task = None
-            self._episode_done = True
-            done = True
-            next_task_desc = ""
+            message = f"Attempt {self._state.step_count} completed. Correctness: {correctness:.2f}. Try again."
 
-        return OrchidObservation(
-            task_id=self._current_task.id if self._current_task else "",
-            task_description=next_task_desc,
-            dataset_path=self._current_task.dataset_path if self._current_task else "",
-            dataset_lines=self._current_task.dataset_lines if self._current_task else 0,
-            execution_output=execution_output,
-            correctness_score=correctness,
-            decomposition_score=decomposition_score,
-            prompt_score=prompt_score,
-            score=reward,
-            feedback=feedback,
-            messages=[{"category": "grader", "content": feedback}],
+        return self._get_observation(
             done=done,
             reward=reward,
-            metadata={
-                "agent_id": agent_id,
-                "agent_scores": self._agent_scores,
-                "step": self._state.step_count,
-                "completed_task_id": completed_task_id,
-            },
+            message=message,
+            execution_output=execution_output,
+            sub_agent_errors=sub_agent_errors,
+            correctness=correctness,
+            decomposition=decomposition_score,
+            prompt=prompt_score
         )
 
     @property
@@ -399,172 +303,156 @@ class OrchidEnvironment(Environment):
         return self._state
 
     # ------------------------------------------------------------------
-    # Orchestrator helpers
+    # Scoring Helpers
     # ------------------------------------------------------------------
 
+    def _calculate_decomposition(self, action: OrchestratorAction, task: BigDataTask) -> float:
+        if not action.sub_agents: return 0.0
+        
+        overlap_penalty = 0
+        covered_lines = set()
+        for sa in action.sub_agents:
+            for i in range(sa.start_line, sa.end_line):
+                if i in covered_lines: overlap_penalty += 1
+                covered_lines.add(i)
+        
+        dataset_lines = task.dataset_lines
+        ideal_agents = max(1, dataset_lines // 2000)
+        agent_count_penalty = abs(len(action.sub_agents) - ideal_agents) * 0.1
+        
+        overlap_ratio = overlap_penalty / max(1, dataset_lines)
+        missing_lines = dataset_lines - len(covered_lines)
+        missing_ratio = missing_lines / max(1, dataset_lines)
+        
+        score = 1.0 - agent_count_penalty - overlap_ratio - missing_ratio
+        return max(0.0, min(1.0, score))
+
+    def _calculate_prompt_quality(self, action: OrchestratorAction, task: BigDataTask) -> float:
+        if not action.sub_agents: return 0.0
+        task_words = set(re.findall(r'\b\w+\b', task.description.lower()))
+        stop_words = {"you", "are", "given", "a", "massive", "file", "the", "in", "of", "to", "and", "is", "for", "must", "be", "python", "string", "strings", "list", "dictionary", "integer", "return", "output", "hard", "easy", "medium", "ultra"}
+        important_task_words = task_words - stop_words
+        
+        total_score = 0
+        for sa in action.sub_agents:
+            prompt_words = set(re.findall(r'\b\w+\b', sa.role_prompt.lower()))
+            overlap = len(important_task_words.intersection(prompt_words))
+            score = min(1.0, overlap / max(1.0, len(important_task_words) * 0.4))
+            total_score += score
+        return total_score / len(action.sub_agents)
+
+    # ------------------------------------------------------------------
+    # Sandbox Helpers
+    # ------------------------------------------------------------------
+
+    def _get_observation(self, done=False, reward=0.0, message="", execution_output="", 
+                         sub_agent_errors=0, correctness=0.0, decomposition=0.0, prompt=0.0) -> OrchestratorObservation:
+        task = self._current_task
+        if task is None:
+            return OrchestratorObservation(done=True, message="No task.")
+
+        sample = self._get_dataset_sample(task.dataset_path)
+        
+        return OrchestratorObservation(
+            done=done,
+            reward=reward,
+            task_id=task.id,
+            task_description=task.description,
+            dataset_path=task.dataset_path,
+            dataset_lines=task.dataset_lines,
+            dataset_sample=sample,
+            attempts_remaining=self._attempts_remaining,
+            message=message,
+            execution_output=execution_output,
+            sub_agent_errors=sub_agent_errors,
+            correctness_score=correctness,
+            decomposition_score=decomposition,
+            prompt_score=prompt,
+            metadata={"step": self._state.step_count}
+        )
+
     def _get_dataset_sample(self, filepath: str, num_lines: int = 5) -> str:
-        """Returns a string containing the first `num_lines` of the dataset."""
-        if not os.path.exists(filepath):
-            return "Sample unavailable: File not found."
+        if not os.path.exists(filepath): return "File not found."
         try:
             with open(filepath, 'r') as f:
                 lines = [next(f).strip() for _ in range(num_lines)]
             return "\n".join(lines)
-        except StopIteration:
-            return "Sample unavailable: File is empty or has fewer than 5 lines."
-        except Exception as e:
-            return f"Sample unavailable: Error reading file ({e})"
+        except Exception: return "Sample unavailable."
 
-    def _next_task_observation(self) -> OrchidObservation:
-        """Assign the next task from the queue and return the opening observation."""
-        if not self._current_task:
-            self._episode_done = True
-            return OrchidObservation(
-                task_id="",
-                task_description="No tasks available.",
-                done=True,
-                reward=0.0,
-            )
-
-        sample = self._get_dataset_sample(self._current_task.dataset_path)
-        desc_with_sample = f"{self._current_task.description}\n\nDataset Sample (first 5 lines):\n```\n{sample}\n```"
-
-        return OrchidObservation(
-            task_id=self._current_task.id,
-            task_description=desc_with_sample,
-            dataset_path=self._current_task.dataset_path,
-            dataset_lines=self._current_task.dataset_lines,
-            messages=[{"category": "system", "content": desc_with_sample}],
-            done=False,
-            reward=0.0,
-        )
-
-    # ------------------------------------------------------------------
-    # Sandbox execution
-    # ------------------------------------------------------------------
-
-    def _evaluate_in_sandbox(self, action: OrchidAction, ground_truth: str, task_type: str) -> tuple[str, float, int, float]:
-        import time
+    def _evaluate_in_sandbox(self, action: OrchestratorAction, task: BigDataTask) -> tuple[str, float, int, float]:
         sub_outputs = [None] * len(action.sub_agents)
+        filename = os.path.basename(task.dataset_path)
         
-        filename = os.path.basename(self._current_task.dataset_path) if self._current_task else "dataset.log"
-        
-        def run_sub_agent(idx, sub_agent):
-            agent_runner = (
-                "import sys, json\n"
-                f"with open('/data/{filename}', 'r') as f:\n"
-                f"    lines = f.readlines()[{sub_agent.start_line}:{sub_agent.end_line}]\n"
-                "chunk_data = ''.join(lines)\n\n"
-                f"{sub_agent.python_code}\n"
+        def run_sub(idx, sa):
+            code = (
+                f"with open('/data/{filename}','r') as f:\n"
+                f" lines=f.readlines()[{sa.start_line}:{sa.end_line}]\n"
+                "chunk_data=''.join(lines)\n"
+                f"{sa.python_code}\n"
             )
-            response = self._sandbox_controller.run_code(agent_runner)
-            return idx, response
+            return idx, self._sandbox_controller.run_code(code)
 
-        start_time = time.time()
-
-        # 1. Map Phase: Execute all sub-agents concurrently using ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(run_sub_agent, idx, sa) for idx, sa in enumerate(action.sub_agents)]
-            for future in futures:
+        start = time.time()
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            futures = [ex.submit(run_sub, i, sa) for i, sa in enumerate(action.sub_agents)]
+            for f in futures:
                 try:
-                    idx, response = future.result()
-                    sub_outputs[idx] = response
-                except Exception as e:
-                    pass
+                    i, out = f.result()
+                    sub_outputs[i] = out
+                except: pass
 
-        # Count sub-agent errors
-        sub_agent_errors = sum(1 for out in sub_outputs if isinstance(out, str) and ("Error" in out or "Traceback" in out))
+        errors = sum(1 for o in sub_outputs if isinstance(o, str) and ("Error" in o or "Traceback" in o))
+        encoded = base64.b64encode(repr(sub_outputs).encode()).decode()
 
-        # 2. Reduce Phase: Run the synthesis code
-        escaped_outputs = base64.b64encode(repr(sub_outputs).encode()).decode()
-        
-        synth_runner = (
-            "import base64, ast, sys\n"
-            f"sub_outputs = ast.literal_eval(base64.b64decode('{escaped_outputs}').decode())\n\n"
+        synth = (
+            "import base64,ast\n"
+            f"sub_outputs=ast.literal_eval(base64.b64decode('{encoded}').decode())\n"
             f"{action.synthesis_code}\n"
         )
-        
-        final_output = self._sandbox_controller.run_code(synth_runner)
-        
-        end_time = time.time()
-        execution_time = end_time - start_time
-            
-        # 3. Evaluate Correctness (Partial Progress Grader)
-        correctness = 0.0
+        final_output = self._sandbox_controller.run_code(synth)
+        execution_time = time.time() - start
+
+        # Robust Grading
+        correctness = self._grade(task, final_output)
+        return final_output, correctness, errors, execution_time
+
+    def _grade(self, task: BigDataTask, output: str) -> float:
         try:
-            if "Error" in final_output or "Traceback" in final_output:
-                correctness = 0.0
-            else:
-                import ast
-                import re
-                import difflib
-                truth_val = ast.literal_eval(ground_truth)
-                try:
-                    pred_val = ast.literal_eval(final_output)
-                except:
-                    # Try to extract a structure if literal_eval fails
-                    try:
-                        match = re.search(r'(\[.*\]|\{.*\})', final_output, re.DOTALL)
-                        if match:
-                            pred_val = ast.literal_eval(match.group(1))
-                        elif task_type == "count":
-                            nums = re.findall(r'-?\d+\.?\d*', final_output)
-                            pred_val = float(nums[-1]) if nums else final_output
-                        else:
-                            pred_val = final_output
-                    except:
-                        pred_val = final_output # fallback to string
-                
-                if task_type == "list" and isinstance(truth_val, list):
-                    if not isinstance(pred_val, list):
-                        pred_val = [pred_val] # Force to list for comparison if it failed parsing
-                    # Jaccard-like overlap for partial credit
-                    truth_set = set(str(x).strip() for x in truth_val)
-                    pred_set = set(str(x).strip() for x in pred_val)
-                    if not truth_set and not pred_set:
-                        correctness = 1.0
-                    else:
-                        intersection = truth_set.intersection(pred_set)
-                        union = truth_set.union(pred_set)
-                        correctness = len(intersection) / len(union)
-                elif task_type == "count":
-                    # Distance-based partial credit for counts
-                    try:
-                        pred_count = float(pred_val)
-                        truth_count = float(truth_val)
-                        diff = abs(pred_count - truth_count)
-                        correctness = max(0.0, 1.0 - (diff / max(1.0, truth_count)))
-                    except:
-                        correctness = 0.0
-                elif task_type == "dict" and isinstance(truth_val, dict) and isinstance(pred_val, dict):
-                    # Partial credit: % of keys present, and if present, closeness of values
-                    score = 0.0
-                    for k, v_truth in truth_val.items():
-                        if k in pred_val:
-                            v_pred = pred_val[k]
-                            try:
-                                if isinstance(v_truth, (int, float)):
-                                    diff = abs(float(v_pred) - float(v_truth))
-                                    score += max(0.0, 1.0 - (diff / max(1.0, float(v_truth))))
-                                elif str(v_truth).strip() == str(v_pred).strip():
-                                    score += 1.0
-                                else:
-                                    # string similarity fallback
-                                    sim = difflib.SequenceMatcher(None, str(v_truth).strip(), str(v_pred).strip()).ratio()
-                                    score += sim
-                            except:
-                                pass
-                    correctness = score / max(1, len(truth_val))
-                else:
-                    # Fallback string similarity
-                    truth_str = str(truth_val).strip()
-                    pred_str = str(pred_val).strip()
-                    if truth_str == pred_str:
-                        correctness = 1.0
-                    else:
-                        correctness = difflib.SequenceMatcher(None, truth_str, pred_str).ratio()
-        except Exception as e:
-            print(f"Grader exception: {e}")
-            correctness = 0.0
+            if "Error" in output or "Traceback" in output: return 0.0
             
-        return final_output, correctness, sub_agent_errors, execution_time
+            truth_val = ast.literal_eval(task.ground_truth)
+            try:
+                pred_val = ast.literal_eval(output)
+            except:
+                match = re.search(r'(\[.*\]|\{.*\})', output, re.DOTALL)
+                if match: pred_val = ast.literal_eval(match.group(1))
+                elif task.task_type == "count":
+                    nums = re.findall(r'-?\d+\.?\d*', output)
+                    pred_val = float(nums[-1]) if nums else 0.0
+                else: pred_val = output
+
+            if task.task_type == "list" and isinstance(truth_val, list):
+                t_set = set(str(x).strip() for x in truth_val)
+                p_set = set(str(x).strip() for x in (pred_val if isinstance(pred_val, list) else [pred_val]))
+                return len(t_set & p_set) / len(t_set | p_set) if t_set | p_set else 1.0
+            elif task.task_type == "count":
+                try:
+                    diff = abs(float(pred_val) - float(truth_val))
+                    return max(0.0, 1.0 - (diff / max(1.0, float(truth_val))))
+                except: return 0.0
+            elif task.task_type == "dict" and isinstance(truth_val, dict) and isinstance(pred_val, dict):
+                score = 0.0
+                for k, v_truth in truth_val.items():
+                    if k in pred_val:
+                        try:
+                            v_pred = pred_val[k]
+                            if isinstance(v_truth, (int, float)):
+                                diff = abs(float(v_pred) - float(v_truth))
+                                score += max(0.0, 1.0 - (diff / max(1.0, float(v_truth))))
+                            elif str(v_truth).strip() == str(v_pred).strip(): score += 1.0
+                            else: score += difflib.SequenceMatcher(None, str(v_truth), str(v_pred)).ratio()
+                        except: pass
+                return score / max(1, len(truth_val))
+            else:
+                return difflib.SequenceMatcher(None, str(truth_val).strip(), str(pred_val).strip()).ratio()
+        except: return 0.0

@@ -5,27 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-FastAPI application for the Orchid Env Environment.
-
-This module creates an HTTP server that exposes the OrchidEnvironment
-over HTTP and WebSocket endpoints, compatible with EnvClient.
-
-Endpoints:
-    - POST /reset: Reset the environment
-    - POST /step: Execute an action
-    - GET /state: Get current environment state
-    - GET /schema: Get action/observation schemas
-    - WS /ws: WebSocket endpoint for persistent sessions
-
-Usage:
-    # Development (with auto-reload):
-    uvicorn server.app:app --reload --host 0.0.0.0 --port 7860
-
-    # Production:
-    uvicorn server.app:app --host 0.0.0.0 --port 7860 --workers 4
-
-    # Or run directly:
-    python -m server.app
+FastAPI application for the Data Forge Orchestrator Game.
 """
 
 try:
@@ -36,20 +16,20 @@ except Exception as e:  # pragma: no cover
     ) from e
 
 try:
-    from ..models import OrchidAction, OrchidObservation
+    from ..models import OrchestratorAction, OrchestratorObservation
     from .orchid_env_environment import OrchidEnvironment
 except ImportError:
-    from models import OrchidAction, OrchidObservation
+    from models import OrchestratorAction, OrchestratorObservation
     from server.orchid_env_environment import OrchidEnvironment
 
 
 # Create the app with web interface and README integration
 app = create_app(
     OrchidEnvironment,
-    OrchidAction,
-    OrchidObservation,
+    OrchestratorAction,
+    OrchestratorObservation,
     env_name="orchid_env",
-    max_concurrent_envs=5,  # increase this number to allow more concurrent WebSocket sessions
+    max_concurrent_envs=5,
 )
 
 
@@ -60,8 +40,6 @@ def main(host: str = "0.0.0.0", port: int = 7860):
     import uvicorn
     import sys
     
-    # Simple check to avoid argparse exceptions if main() is called without args
-    # by external runners
     if len(sys.argv) > 1 and "--port" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
