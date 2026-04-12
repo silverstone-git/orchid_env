@@ -33,7 +33,7 @@ except ImportError:
 from .sandbox_controller import LocalController
 
 # ---------------------------------------------------------------------------
-# Task bank (Preserved from original Orchid Env)
+# Task bank
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -224,7 +224,7 @@ class OrchidEnvironment(Environment):
         """Start a new episode with the NEXT task in the bank."""
         self._task_index += 1
         if self._task_index >= len(TASK_BANK):
-            self._task_index = 0 # Loop back for demo/test purposes if needed, or handle exhaustion
+            self._task_index = 0 # Loop back for demo/test purposes
             
         self._current_task = TASK_BANK[self._task_index]
         self._attempts_remaining = 5
@@ -251,47 +251,47 @@ class OrchidEnvironment(Environment):
         task = self._current_task
         
         # 1. Execute in Sandbox
-        execution_output, correctness, sub_agent_errors, execution_time = self._evaluate_in_sandbox(action, task)
+        execution_output, correctness, sub_outputs, sub_agent_errors, execution_time = self._evaluate_in_sandbox(action, task)
 
-        # 2. Calculate Decomposition Efficiency
+        # 2. Calculate Scoring Components
         decomposition_score = self._calculate_decomposition(action, task)
-        
-        # 3. Calculate Prompt Quality
         prompt_score = self._calculate_prompt_quality(action, task)
 
-        # 4. Determine Win/Loss/Continue
-        won = correctness >= 1.0 # Strict accuracy
+        # 3. Determine Win/Loss/Continue
+        won = correctness >= 1.0 
         lost = self._attempts_remaining <= 0 and not won
         done = won or lost
 
-        # Calculate weighted reward at the end of the episode
-        reward = 0.0
-        if done:
-            # Reward is a weighted sum of objectives
-            reward = (0.5 * correctness) + (0.3 * decomposition_score) + (0.2 * prompt_score)
-            
-            # Apply Strict Penalties
-            if sub_agent_errors > 0: reward -= 0.1 * sub_agent_errors
-            if "Error" in execution_output or "Traceback" in execution_output: reward -= 0.3
-            if correctness == 0.0: reward -= 0.2
-            reward -= execution_time * 0.01 # Time penalty
-            reward -= 0.05 * self._state.step_count # Step decay
-            
-            reward = max(0.0, min(1.0, reward))
+        # 4. Calculate Weighted Reward (returned on every step to help learning)
+        reward = (0.5 * correctness) + (0.3 * decomposition_score) + (0.2 * prompt_score)
+        
+        # Apply Strict Penalties
+        if sub_agent_errors > 0: reward -= 0.1 * sub_agent_errors
+        if "Error" in execution_output or "Traceback" in execution_output: reward -= 0.3
+        if correctness == 0.0: reward -= 0.2
+        reward -= execution_time * 0.01 # Time penalty
+        reward -= 0.05 * self._state.step_count # Step decay
+        
+        reward = max(0.0, min(1.0, reward))
 
-        # Prepare Message
+        # 5. Prepare Feedback Message
         if won:
             message = "SUCCESS! You solved the task perfectly."
         elif lost:
             message = f"FAILED. Out of attempts. Final correctness: {correctness:.2f}"
         else:
-            message = f"Attempt {self._state.step_count} completed. Correctness: {correctness:.2f}. Try again."
+            message = f"Attempt {self._state.step_count} completed. Correctness: {correctness:.2f}. "
+            if correctness == 0.0 and execution_output == "[]":
+                message += "HINT: Your extraction found nothing. Check if your regex matches the colon or exact spacing in the log lines."
+            else:
+                message += "Try to refine your logic."
 
         return self._get_observation(
             done=done,
             reward=reward,
             message=message,
             execution_output=execution_output,
+            sub_agent_outputs=sub_outputs,
             sub_agent_errors=sub_agent_errors,
             correctness=correctness,
             decomposition=decomposition_score,
@@ -346,7 +346,8 @@ class OrchidEnvironment(Environment):
     # ------------------------------------------------------------------
 
     def _get_observation(self, done=False, reward=0.0, message="", execution_output="", 
-                         sub_agent_errors=0, correctness=0.0, decomposition=0.0, prompt=0.0) -> OrchestratorObservation:
+                         sub_agent_outputs=None, sub_agent_errors=0, correctness=0.0, 
+                         decomposition=0.0, prompt=0.0) -> OrchestratorObservation:
         task = self._current_task
         if task is None:
             return OrchestratorObservation(done=True, message="No task.")
@@ -364,6 +365,7 @@ class OrchidEnvironment(Environment):
             attempts_remaining=self._attempts_remaining,
             message=message,
             execution_output=execution_output,
+            sub_agent_outputs=sub_agent_outputs or [],
             sub_agent_errors=sub_agent_errors,
             correctness_score=correctness,
             decomposition_score=decomposition,
@@ -379,7 +381,7 @@ class OrchidEnvironment(Environment):
             return "\n".join(lines)
         except Exception: return "Sample unavailable."
 
-    def _evaluate_in_sandbox(self, action: OrchestratorAction, task: BigDataTask) -> tuple[str, float, int, float]:
+    def _evaluate_in_sandbox(self, action: OrchestratorAction, task: BigDataTask) -> tuple[str, float, List[str], int, float]:
         sub_outputs = [None] * len(action.sub_agents)
         filename = os.path.basename(task.dataset_path)
         
@@ -402,8 +404,9 @@ class OrchidEnvironment(Environment):
                 except: pass
 
         errors = sum(1 for o in sub_outputs if isinstance(o, str) and ("Error" in o or "Traceback" in o))
+        
+        # Synthesis Phase
         encoded = base64.b64encode(repr(sub_outputs).encode()).decode()
-
         synth = (
             "import base64,ast\n"
             f"sub_outputs=ast.literal_eval(base64.b64decode('{encoded}').decode())\n"
@@ -412,9 +415,12 @@ class OrchidEnvironment(Environment):
         final_output = self._sandbox_controller.run_code(synth)
         execution_time = time.time() - start
 
-        # Robust Grading
         correctness = self._grade(task, final_output)
-        return final_output, correctness, errors, execution_time
+        
+        # Clean up sub_outputs for observation (truncate long strings)
+        cleaned_subs = [str(o)[:500] + "..." if len(str(o)) > 500 else str(o) for o in sub_outputs]
+        
+        return final_output, correctness, cleaned_subs, errors, execution_time
 
     def _grade(self, task: BigDataTask, output: str) -> float:
         try:
@@ -437,8 +443,10 @@ class OrchidEnvironment(Environment):
                 return len(t_set & p_set) / len(t_set | p_set) if t_set | p_set else 1.0
             elif task.task_type == "count":
                 try:
-                    diff = abs(float(pred_val) - float(truth_val))
-                    return max(0.0, 1.0 - (diff / max(1.0, float(truth_val))))
+                    pred_count = float(pred_val)
+                    truth_count = float(truth_val)
+                    diff = abs(pred_count - truth_count)
+                    return max(0.0, 1.0 - (diff / max(1.0, truth_count)))
                 except: return 0.0
             elif task.task_type == "dict" and isinstance(truth_val, dict) and isinstance(pred_val, dict):
                 score = 0.0
