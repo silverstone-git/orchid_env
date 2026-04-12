@@ -22,15 +22,13 @@ def log_debug(msg: str) -> None:
     if DEBUG_MODE:
         print(f"[DEBUG] {msg}", flush=True)
 
-IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 TASK_NAME = os.getenv("ORCHID_ENV_TASK", "data_forge_orchestration")
 BENCHMARK = os.getenv("ORCHID_ENV_BENCHMARK", "orchid_env")
-MAX_STEPS = 5 # Match max_attempts in environment
-TEMPERATURE = 0.2
+MAX_STEPS = 5 
+TEMPERATURE = 0.1
 MAX_TOKENS = 2048
 SUCCESS_SCORE_THRESHOLD = 0.5
 
@@ -47,11 +45,17 @@ SYSTEM_PROMPT = textwrap.dedent(
           "role_prompt": "Instructions for this agent",
           "start_line": int,
           "end_line": int,
-          "python_code": "print(extracted_data)" 
+          "python_code": "import re, json; ...; print(extracted_data)" 
         }
       ],
-      "synthesis_code": "print(final_result)" 
+      "synthesis_code": "import json; ...; print(final_result)" 
     }
+
+    Execution Context:
+    - Map Phase: Each sub-agent's 'python_code' runs in an isolated sandbox. 'chunk_data' (string) contains the line chunk.
+    - Reduce Phase: 'synthesis_code' runs in a fresh sandbox. 'sub_outputs' (list of strings) contains the output from each sub-agent.
+    - Efficiency: Aim for roughly 2000 lines per agent. Avoid overlapping chunks or missing lines.
+    - Sub-agents MUST print a JSON-formatted string so the synthesis code can parse it.
     """
 ).strip()
 
@@ -80,10 +84,13 @@ def build_user_prompt(obs) -> str:
     prompt = f"Task: {obs.task_description}\nDataset: {obs.dataset_lines} lines\nSample:\n{obs.dataset_sample}\n"
     prompt += f"Attempts Remaining: {obs.attempts_remaining}\n"
     if obs.message or obs.execution_output:
-        prompt += f"\nFeedback from last attempt: {obs.message}\n"
+        prompt += f"\n--- FEEDBACK FROM PREVIOUS ATTEMPT ---\n"
+        prompt += f"Status: {obs.message}\n"
+        if obs.sub_agent_outputs:
+            prompt += f"Worker Outputs (first few): {obs.sub_agent_outputs[:3]}\n"
         if obs.execution_output:
-            prompt += f"Execution Output:\n{obs.execution_output}\n"
-        prompt += "Please fix the errors and try again."
+            prompt += f"Synthesis Output: {obs.execution_output}\n"
+        prompt += "Please fix the logic and try again."
     return prompt
 
 
@@ -98,7 +105,6 @@ async def get_model_message(client: AsyncOpenAI, obs, use_json_format: bool) -> 
             ],
             "temperature": TEMPERATURE,
             "max_tokens": MAX_TOKENS,
-            "stream": False,
         }
         if use_json_format:
             kwargs["response_format"] = {"type": "json_object"}
@@ -110,7 +116,12 @@ async def get_model_message(client: AsyncOpenAI, obs, use_json_format: bool) -> 
         json_match = re.search(r'(\{.*\})', cleaned_text, re.DOTALL)
         json_text = json_match.group(1) if json_match else cleaned_text
             
-        data = json.loads(json_text)
+        try:
+            data = json.loads(json_text)
+        except json.JSONDecodeError:
+            fixed_json = re.sub(r'\\(?![/"\\bfnrtu])', r'\\\\', json_text)
+            data = json.loads(fixed_json)
+
         sub_agents = [SubAgentDeploy(**sa) for sa in data.get("sub_agents", [])]
         
         return OrchestratorAction(
@@ -126,14 +137,14 @@ async def get_model_message(client: AsyncOpenAI, obs, use_json_format: bool) -> 
 async def main() -> None:
     client = AsyncOpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     
-    # Simple JSON mode probe
     use_json_format = False
     try:
         await client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": "Output JSON: {'r':4}"}],
             response_format={"type": "json_object"},
-            max_tokens=10
+            max_tokens=10,
+            timeout=10.0
         )
         use_json_format = True
     except: pass
@@ -145,7 +156,7 @@ async def main() -> None:
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        async with OrchidEnv(base_url="http://localhost:7860", connect_timeout_s=600.0) as env:
+        async with OrchidEnv(base_url="http://localhost:7860", connect_timeout_s=600.0, message_timeout_s=600.0) as env:
             result = await env.reset()
             obs = result.observation
             
@@ -153,7 +164,10 @@ async def main() -> None:
                 if result.done: break
                 
                 action = await get_model_message(client, obs, use_json_format)
-                error = action.chunking_strategy if "ERROR" in action.chunking_strategy else None
+                
+                # Check for LLM generation error
+                llm_error = action.chunking_strategy if action.chunking_strategy.startswith("ERROR") else None
+                
                 action_str = f"deploy(workers={len(action.sub_agents)})"
 
                 result = await env.step(action)
@@ -163,7 +177,15 @@ async def main() -> None:
                 rewards.append(reward)
                 steps_taken = step
 
-                log_step(step=step, action=action_str, reward=reward, done=result.done, error=error)
+                # Log step using mandatory format
+                # If there's an LLM error or Env hint, put it in error= field
+                env_error = None
+                if reward < 0.3 and "HINT" in obs.message:
+                    env_error = obs.message.split("HINT:")[1].strip()
+                
+                error_msg = llm_error or env_error
+                
+                log_step(step=step, action=action_str, reward=reward, done=result.done, error=error_msg)
                 if result.done: break
 
             final_score = sum(rewards) / steps_taken if steps_taken > 0 else 0.0
