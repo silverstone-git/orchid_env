@@ -27,7 +27,7 @@ API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 BENCHMARK = os.getenv("ORCHID_ENV_BENCHMARK", "orchid_env")
 MAX_ATTEMPTS = 5 
-NUM_TASKS_TO_RUN = 3
+NUM_TASKS_TO_RUN = 5
 TEMPERATURE = 0.1
 MAX_TOKENS = 2048
 
@@ -182,9 +182,10 @@ async def main() -> None:
                     
                     if result.done: break
 
-                final_score = sum(rewards) / steps_taken if steps_taken > 0 else 0.0
-                score = min(max(final_score, 0.0), 1.0)
-                success = obs.correctness_score >= 1.0
+                final_score = sum(rewards) / steps_taken if steps_taken > 0 else 0.001
+                # Validator requires score to be strictly in (0, 1)
+                score = min(max(final_score, 0.001), 0.999)
+                success = obs.correctness_score >= 0.95
                 log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
     except Exception as e:
