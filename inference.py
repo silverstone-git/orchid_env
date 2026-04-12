@@ -1,5 +1,5 @@
 """
-Inference Script: Data Forge Orchestrator Game
+Inference Script: Data Forge Orchestrator Game (Multi-Task)
 """
 
 import asyncio
@@ -25,12 +25,11 @@ def log_debug(msg: str) -> None:
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
-TASK_NAME = os.getenv("ORCHID_ENV_TASK", "data_forge_orchestration")
 BENCHMARK = os.getenv("ORCHID_ENV_BENCHMARK", "orchid_env")
-MAX_STEPS = 5 
+MAX_ATTEMPTS = 5 
+NUM_TASKS_TO_RUN = 3
 TEMPERATURE = 0.1
 MAX_TOKENS = 2048
-SUCCESS_SCORE_THRESHOLD = 0.5
 
 SYSTEM_PROMPT = textwrap.dedent(
     """
@@ -54,7 +53,6 @@ SYSTEM_PROMPT = textwrap.dedent(
     Execution Context:
     - Map Phase: Each sub-agent's 'python_code' runs in an isolated sandbox. 'chunk_data' (string) contains the line chunk.
     - Reduce Phase: 'synthesis_code' runs in a fresh sandbox. 'sub_outputs' (list of strings) contains the output from each sub-agent.
-    - Efficiency: Aim for roughly 2000 lines per agent. Avoid overlapping chunks or missing lines.
     - Sub-agents MUST print a JSON-formatted string so the synthesis code can parse it.
     """
 ).strip()
@@ -111,17 +109,11 @@ async def get_model_message(client: AsyncOpenAI, obs, use_json_format: bool) -> 
             
         completion = await client.chat.completions.create(**kwargs)
         raw_text = (completion.choices[0].message.content or "").strip()
-        
         cleaned_text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
         json_match = re.search(r'(\{.*\})', cleaned_text, re.DOTALL)
         json_text = json_match.group(1) if json_match else cleaned_text
             
-        try:
-            data = json.loads(json_text)
-        except json.JSONDecodeError:
-            fixed_json = re.sub(r'\\(?![/"\\bfnrtu])', r'\\\\', json_text)
-            data = json.loads(fixed_json)
-
+        data = json.loads(json_text)
         sub_agents = [SubAgentDeploy(**sa) for sa in data.get("sub_agents", [])]
         
         return OrchestratorAction(
@@ -149,54 +141,54 @@ async def main() -> None:
         use_json_format = True
     except: pass
 
-    rewards: List[float] = []
-    steps_taken = 0
-    success = False
-
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    # Use local server or remote endpoint
+    base_url = "http://localhost:7860"
+    if "inference_remote.py" in sys.argv[0]:
+        base_url = "https://eridians-orchid-env.hf.space"
 
     try:
-        async with OrchidEnv(base_url="http://localhost:7860", connect_timeout_s=600.0, message_timeout_s=600.0) as env:
-            result = await env.reset()
-            obs = result.observation
+        async with OrchidEnv(base_url=base_url, connect_timeout_s=600.0, message_timeout_s=600.0) as env:
             
-            for step in range(1, MAX_STEPS + 1):
-                if result.done: break
-                
-                action = await get_model_message(client, obs, use_json_format)
-                
-                # Check for LLM generation error
-                llm_error = action.chunking_strategy if action.chunking_strategy.startswith("ERROR") else None
-                
-                action_str = f"deploy(workers={len(action.sub_agents)})"
+            for task_num in range(1, NUM_TASKS_TO_RUN + 1):
+                rewards: List[float] = []
+                steps_taken = 0
+                success = False
 
-                result = await env.step(action)
+                result = await env.reset()
                 obs = result.observation
-
-                reward = result.reward if result.reward is not None else 0.0
-                rewards.append(reward)
-                steps_taken = step
-
-                # Log step using mandatory format
-                # If there's an LLM error or Env hint, put it in error= field
-                env_error = None
-                if reward < 0.3 and "HINT" in obs.message:
-                    env_error = obs.message.split("HINT:")[1].strip()
                 
-                error_msg = llm_error or env_error
+                log_start(task=obs.task_id, env=BENCHMARK, model=MODEL_NAME)
                 
-                log_step(step=step, action=action_str, reward=reward, done=result.done, error=error_msg)
-                if result.done: break
+                for step in range(1, MAX_ATTEMPTS + 1):
+                    if result.done: break
+                    
+                    action = await get_model_message(client, obs, use_json_format)
+                    llm_error = action.chunking_strategy if action.chunking_strategy.startswith("ERROR") else None
+                    action_str = f"deploy(workers={len(action.sub_agents)})"
 
-            final_score = sum(rewards) / steps_taken if steps_taken > 0 else 0.0
-            score = min(max(final_score, 0.0), 1.0)
-            success = obs.correctness_score >= 1.0
+                    result = await env.step(action)
+                    obs = result.observation
+
+                    reward = result.reward if result.reward is not None else 0.0
+                    rewards.append(reward)
+                    steps_taken = step
+
+                    env_error = None
+                    if reward < 0.3 and "HINT" in obs.message:
+                        env_error = obs.message.split("HINT:")[1].strip()
+                    
+                    error_msg = llm_error or env_error
+                    log_step(step=step, action=action_str, reward=reward, done=result.done, error=error_msg)
+                    
+                    if result.done: break
+
+                final_score = sum(rewards) / steps_taken if steps_taken > 0 else 0.0
+                score = min(max(final_score, 0.0), 1.0)
+                success = obs.correctness_score >= 1.0
+                log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
     except Exception as e:
-        log_debug(f"Error: {e}")
-        score = 0.0
-    finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        log_debug(f"Benchmark run error: {e}")
 
 
 if __name__ == "__main__":
